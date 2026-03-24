@@ -1,23 +1,29 @@
+import math
 import socket
+import struct
 import time
+from rtde_receive import RTDEReceiveInterface
+
+
 
 
 class arm:
     def __init__(self, belt_speed=0.02):  # belt_speed in m/s
         self.belt_speed = belt_speed
         # Default connection parameters (from lab setup)
-        self.gripper_ip = "10.10.0.60"
+        self.gripper_ip = "10.10.0.14"
         self.gripper_port = 63352
-        self.robot_ip = "10.10.0.60"
+        self.robot_ip = "10.10.0.14"
         self.robot_port = 30003
-        self.vision_ip = "10.10.1.60"
+        self.vision_ip = "10.10.1.14"
         self.vision_port = 2025
-        self.start_pose = (116, -300, 200)  # mm
-        self.start_rot = (0, -180, 0)  # degree
-        
+        self.start_pose = [116, -300, 200]  # mm
+        self.start_rot = [0, -180, 0]  # degree
+        self.rtde_r = RTDEReceiveInterface(self.robot_ip)
+
         # Default movement parameters
-        self.velocity = 0.25  # m/s
-        self.acceleration = 1.2  # m/s^2
+        self.velocity = 0.01  # m/s
+        self.acceleration = 0.05  # m/s^2
 
         self.connect()
 
@@ -38,18 +44,20 @@ class arm:
             self.g.send(b'SET SPE 255\n')
             self.g.send(b'SET FOR 255\n')
 
+    def go_to_start(self):
+        self.move_abs(self.start_pose[0], self.start_pose[1], self.start_pose[2], self.start_rot[0], self.start_rot[1], self.start_rot[2])
+
     def connect(self)->None:
-        self.g = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.g.connect((self.gripper_ip, self.gripper_port))
-        self.r = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.r.connect((self.robot_ip, self.robot_port))
-        self.v = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.v.connect((self.vision_ip, self.vision_port)) 
+        self.g = self._wait_for_connection(self.gripper_ip, self.gripper_port)
+        self.r = self._wait_for_connection(self.robot_ip, self.robot_port)
+
+        # self.v = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        # self.v.connect((self.vision_ip, self.vision_port)) 
     def test_connection(self)->bool:
         return (
             hasattr(self, 'g') and self.g is not None and
-            hasattr(self, 'r') and self.r is not None and
-            hasattr(self, 'v') and self.v is not None
+            hasattr(self, 'r') and self.r is not None #and
+            # hasattr(self, 'v') and self.v is not None
         )
     def disconnect(self):
         try:
@@ -67,13 +75,79 @@ class arm:
         self.g = None
         self.r = None
         self.v = None
-    def move(self, x: float, y: float, z: float, rx: float, ry: float, rz: float, v: float = None, a: float = None) -> None:
+
+    def _wait_for_connection(self, ip: str, port: int, timeout: float = 10.0) -> socket.socket:
+        """Block until a TCP connection succeeds or timeout elapses (no time.sleep used)."""
+        deadline = time.monotonic() + timeout if timeout else None
+        while True:
+            try:
+                return socket.create_connection((ip, port), timeout=1.0)
+            except OSError:
+                if deadline and time.monotonic() >= deadline:
+                    raise ConnectionError(f"Could not connect to {ip}:{port} within {timeout}s")
+    def move_rel(self, x: float, y: float, z: float, rx: float, ry: float, rz: float, v: float = None, a: float = None, wait: bool = True, timeout: float = 10.0, tol: float = 0.002) -> None: # in mm and degree
         if v is None:
             v = self.velocity
         if a is None:
             a = self.acceleration
-        command = f"movel(pose_add(get_actual_tcp_pose(), p[{x}, {y}, {z}, {rx}, {ry}, {rz}]), {v}, {a}, 2, 0)\n"
+
+        # convert deltas from mm/deg to m/rad
+        dx, dy, dz = x / 1000.0, y / 1000.0, z / 1000.0
+        drx, dry, drz = math.radians(rx), math.radians(ry), math.radians(rz)
+
+        # Capture starting pose to compute target if available
+        start_pose = self._read_actual_tcp_pose()
+        target = None
+        if start_pose is not None and len(start_pose) == 6:
+            target = tuple(cur + delta for cur, delta in zip(start_pose, (dx, dy, dz, drx, dry, drz)))
+
+        command = f"movel(pose_add(get_actual_tcp_pose(), p[{dx}, {dy}, {dz}, {drx}, {dry}, {drz}]), {v}, {a}, 2, 0)\n"
         self.r.send(command.encode("utf-8"))
+
+        if not wait or target is None:
+            return
+
+        end_time = time.monotonic() + timeout
+        while time.monotonic() < end_time:
+            pose = self._read_actual_tcp_pose()
+            if pose is not None:
+                if all(abs(cur - goal) <= tol for cur, goal in zip(pose, target)):
+                    return
+            time.sleep(0.05)
+
+    def move_abs(self, x: float, y: float, z: float, rx: float, ry: float, rz: float, v: float = None, a: float = None, wait: bool = True, timeout: float = 10.0, tol: float = 0.002) -> None:
+        if v is None:
+            v = self.velocity
+        if a is None:
+            a = self.acceleration
+        # URScript expects meters and radians; inputs here are given in mm/deg from the rest of the script.
+        x_m, y_m, z_m = x / 1000.0, y / 1000.0, z / 1000.0
+        rx_r, ry_r, rz_r = math.radians(rx), math.radians(ry), math.radians(rz)
+        command = f"movel(p[{x_m}, {y_m}, {z_m}, {rx_r}, {ry_r}, {rz_r}], {v}, {a})\n"
+        self.r.send(command.encode("utf-8"))
+        if not wait:
+            return
+
+        target = (x_m, y_m, z_m, rx_r, ry_r, rz_r)
+        end_time = time.monotonic() + timeout
+        while time.monotonic() < end_time:
+            pose = self._read_actual_tcp_pose()
+            print(f"Current pose: {pose}, Target pose: {target}")
+            if pose is not None:
+                if all(abs(cur - goal) <= tol for cur, goal in zip(pose, target)):
+                    return
+            time.sleep(0.05)
+
+    def _read_actual_tcp_pose(self):
+        """Best-effort read of the current TCP pose from the realtime stream (port 30003)."""
+        try:
+            pose = self.rtde_r.getActualTCPPose()  # returns [x, y, z, rx, ry, rz] in m/rad
+            if pose and len(pose) == 6:
+                return tuple(pose)
+            return None
+        except Exception:
+            return None
+    
     def get_coordinates(self)->tuple[float, float]: # we care only about x and y
         try:
             self.v.send(b'cap!')
@@ -114,22 +188,43 @@ class arm:
 
 def main():
     my_arm = arm()  # Example belt speed
-    while True:
-        coor = my_arm.get_coordinates()
-        if coor is not None:
-            # get x and y from coordinates
-            x, y = coor
-            # move robot to the box
-            my_arm.move(x, y, 0, 0, 0, 0)
-            my_arm.move(0, -0.09, 0, 0, 0, 0)  # move down to hover above the box
-            # hover above the box with same speed and acceleration of the box + close the gripper at the same time (multithreading)
-            while my_arm.gripped() is False:
-                my_arm.gripper_close() + my_arm.move(0, y+0.01, 0, 0, 0, 0)  # keep hovering with the same speed and acceleration of the box
+    try:
+        while True:
+            coor = my_arm.get_coordinates()
+            if coor is not None:
+                # get x and y from coordinates
+                x, y = coor
+                # move robot to the box
+                my_arm.move(x, y, 0, 0, 0, 0)
+                my_arm.move(0, -0.09, 0, 0, 0, 0)  # move down to hover above the box
+                # hover above the box with same speed and acceleration of the box + close the gripper at the same time (multithreading)
+                while my_arm.gripped() is False:
+                    my_arm.gripper_close() + my_arm.move(0, y+0.01, 0, 0, 0, 0)  # keep hovering with the same speed and acceleration of the box
 
-                time.sleep(0.5)
-            
-            # check if the box is gripped, if not, pass and wait for the next coordinates from the vision system
-            # if gripped, move the robot to the drop-off location and open the gripper to release the box then exit the loo
+                    time.sleep(0.5)
+                
+                # check if the box is gripped, if not, pass and wait for the next coordinates from the vision system
+                # if gripped, move the robot to the drop-off location and open the gripper to release the box then exit the loo
+    except KeyboardInterrupt:
+        print("Keyboard interrupt received, stopping loop.")
+    finally:
+        my_arm.disconnect()
     
 if __name__ == '__main__':
-    main()
+    my_arm = None
+    try:
+        my_arm = arm()  # Example belt speed
+        print("Connection test passed:", my_arm.test_connection())
+
+        print("Moving to start position")
+        my_arm.move_rel(-100, 0, 0, 0, 0, 0)  # Move to start position
+
+        time.sleep(2)  # Wait for the robot to reach the start position
+        print("Moved to start position")
+
+        main()
+    except KeyboardInterrupt:
+        print("Keyboard interrupt received, shutting down.")
+    finally:
+        if my_arm:
+            my_arm.disconnect()
