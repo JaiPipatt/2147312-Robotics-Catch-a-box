@@ -41,7 +41,7 @@ if lines is not None:
             continue
 
         angle = np.arctan2(y2-y1, x2-x1)
-        angle_deg = abs(np.degrees(angle))
+        angle_deg = abs(np.degrees(angle))       
         angle_score = min(angle_deg, 180 - angle_deg)
 
         score = length if angle_score < 45 else length * 0.5
