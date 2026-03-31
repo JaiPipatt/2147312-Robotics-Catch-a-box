@@ -170,7 +170,6 @@ def detect(img_path_or_array, visualize=True, verbose=True):
 
     x1,  y1,  x2,  y2  = best_line
     px1, py1, px2, py2 = best_perp_line
-    angle_deg = np.degrees(np.arctan2(y2-y1, x2-x1))
     corner    = line_intersection(best_line, best_perp_line)
 
     if corner is None:
@@ -191,16 +190,24 @@ def detect(img_path_or_array, visualize=True, verbose=True):
     center_x = corner_x + dir1_x*dist1 + dir2_x*dist2
     center_y = corner_y + dir1_y*dist1 + dir2_y*dist2
 
+    edge1_length = np.hypot(x2-x1,   y2-y1)
+    edge2_length = np.hypot(px2-px1, py2-py1)
+    edge_ratio = max(edge1_length, edge2_length) / min(edge1_length, edge2_length)
+    box_state = 'stand' if edge_ratio > 1.35 else 'lie'
+
+    angle_deg = -np.degrees(np.arctan2(y2-y1, x2-x1)) if edge1_length < edge2_length else -np.degrees(np.arctan2(py2-py1, px2-px1)) 
+
     result = {
         'corner':      (corner_x, corner_y),
         'center':      (center_x, center_y),
         'orientation': angle_deg,
-        'edge1_length': np.hypot(x2-x1,   y2-y1),
-        'edge2_length': np.hypot(px2-px1, py2-py1),
+        'edge1_length': edge1_length,
+        'edge2_length': edge2_length,
         'best_line':   best_line,
         'perp_line':   best_perp_line,
         'img':         img,
         'all_lines':   lines,
+        'box_state':   box_state
     }
 
     if verbose:
@@ -208,6 +215,7 @@ def detect(img_path_or_array, visualize=True, verbose=True):
         print(f"Box center (pixels):   ({center_x:.1f}, {center_y:.1f})")
         print(f"Box orientation:       {angle_deg:.2f} deg")
         print(f"Edge lengths:          {result['edge1_length']:.1f}px, {result['edge2_length']:.1f}px")
+        print(f"Box state:             {result['box_state']}")
 
     if visualize:
         visualize_result(result)
@@ -269,4 +277,4 @@ def visualize_result(result):
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    result = detect(r'D:\Data\Me\CHULA\Study\Robotics\2147312-Robotics-Catch-a-box\test_img_crop\box2_crop.jpg')
+    result = detect(r'D:\Data\Me\CHULA\Study\Robotics\2147312-Robotics-Catch-a-box\test_img_crop\box3_crop.jpg')
