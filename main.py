@@ -188,90 +188,103 @@ class arm:
             self.acceleration = acceleration
 
     def hover_and_catch(self, init_x_m: float, init_y_m: float) -> bool:
-        
-        # --- 1. Position & Hardware Setup ---
-        # Convert initial X and Y coordinates to millimeters
-        init_x_mm = init_x_m * 1000.0
-        init_y_mm = init_y_m * 1000.0
-        
-        # Hardware Offsets (Great to include for your report!)
-        tcp_start_z_mm = self.cam_read_pose[2]     
-        init_y_mm = self.cam_read_pose[1] + init_y_mm # Align Y with camera reading position  
-        # camera_offset_z = -20.0        
-        # camera_z_mm = tcp_start_z_mm + camera_offset_z 
-        
-        box_height_mm = 130.0  # Max Height of the box from the belt (Z=0)
-        safety_margin = 100.0   # 10 cm clearance above the box
-        
-        # --- 2. Calculate Target TCP Heights ---
-        # Because move_abs controls the Gripper (TCP), we calculate target Z based on the TCP.
-        # To hover safely above the 130mm box, the TCP must be at 180mm.
-        z_hover_tcp = box_height_mm + safety_margin  # 230 mm
-        
-        # To catch the box, plunge the TCP 15mm below the top edge to grip the sides
-        z_catch_tcp = box_height_mm - 15.0 # 115 mm
-        
-        print(f"Gripper is at {tcp_start_z_mm}mm.")
-        print(f"Tracking... TCP Z-Hover set to {z_hover_tcp}mm, Z-Catch to {z_catch_tcp}mm")
+    
+        # --- 1. Convert camera input (m → mm) ---
+        cam_x_mm = init_x_m * 1000.0
+        cam_y_mm = init_y_m * 1000.0
 
-        # --- 3. Tracking Configurations ---
-        belt_speed_mms = self.belt_speed * 1000.0  # 20 mm/s
-        # midpoint_x = 116.0 # mm
-        
+        # --- 2. Camera → TCP offset 
+        offset_x = 183.3  # mm 
+        offset_y = 0.0     
+        offset_z = -20.0   # need to adjust based on camera height vs TCP***
 
-        camera_offset_x = 182.5 # mm (from measurements)
-        trigger_grab_x = init_x_mm - camera_offset_x 
-        # Open gripper and start the clock
+        # Convert to robot (TCP) coordinates
+        target_x_mm = cam_x_mm + offset_x
+        target_y_mm = self.cam_read_pose[1] + cam_y_mm + offset_y
+
+        # --- 3. Heights ---
+        box_height_mm = 130.0
+        safety_margin = 100.0
+
+        z_hover_tcp = box_height_mm + safety_margin + offset_z
+        z_catch_tcp = box_height_mm - 15.0 + offset_z
+
+        print(f"Tracking... Hover Z={z_hover_tcp}mm, Catch Z={z_catch_tcp}mm")
+
+        # --- 4. Conveyor tracking ---
+        belt_speed_mms = self.belt_speed * 1000.0
+
+        # Trigger when TCP aligns with box
+        trigger_grab_x = target_x_mm
+
         self.gripper_open()
         start_time = time.time()
-        
-        # --- 4. The Dynamic Hover Loop ---
+
+        # --- 5. Hover tracking loop ---
         while True:
             elapsed_time = time.time() - start_time
-            # Calculate current X position (Assuming belt moves left, so X is decreasing)
-            current_x_mm = init_x_mm - (belt_speed_mms * elapsed_time)
-            
-            # Send non-blocking move command to hover exactly above the moving box
-            self.move_abs(current_x_mm, init_y_mm, z_hover_tcp, 
-                          self.start_rot[0], self.start_rot[1], self.start_rot[2], 
-                          wait=False)
-            
-            # Check if it is time to plunge
-            if current_x_mm <= trigger_grab_x:
-                print(f"Trigger point ({trigger_grab_x}mm) reached! Plunging to grab...")
-                break
-                
-            time.sleep(0.05) # Prevent flooding the robot controller with commands
 
-        # --- 5. The Plunge and Catch ---
-        # Recalculate X one more time to ensure forward motion continues during the plunge
-        elapsed_time = time.time() - start_time
-        current_x_mm = init_x_mm - (belt_speed_mms * elapsed_time)
-        
-        # Move down to catch height (wait=True so we ensure it reaches the bottom before closing)
-        self.move_abs(current_x_mm, init_y_mm, z_catch_tcp, 
-                      self.start_rot[0], self.start_rot[1], self.start_rot[2], 
-                      wait=True)
-        
-        # Close the gripper
+            # Box moving → update target X
+            current_target_x_mm = target_x_mm - (belt_speed_mms * elapsed_time)
+
+            # Read current TCP pose
+            pose = self._read_actual_tcp_pose()
+            if pose is None:
+                continue
+
+            cur_x_mm = pose[0] * 1000.0
+            cur_y_mm = pose[1] * 1000.0
+            cur_z_mm = pose[2] * 1000.0
+
+            # Compute RELATIVE correction
+            dx = current_target_x_mm - cur_x_mm
+            dy = target_y_mm - cur_y_mm
+            dz = z_hover_tcp - cur_z_mm
+
+            self.move_rel(dx, dy, dz, 0, 0, 0, wait=False)
+
+            # Check if aligned → grab
+            if abs(current_target_x_mm - cur_x_mm) < 5.0:  # 5 mm tolerance
+                print("Aligned! Plunging...")
+                break
+
+            time.sleep(0.05)
+
+        # --- 6. Plunge ---
+        pose = self._read_actual_tcp_pose()
+        cur_z_mm = pose[2] * 1000.0
+
+        dz_down = z_catch_tcp - cur_z_mm
+
+        self.move_rel(0, 0, dz_down, 0, 0, 0, wait=True)
+
+        # Close gripper
         self.gripper_close()
-        time.sleep(0.5) # Wait a moment for fingers to physically clamp the box
-        
-        # --- 6. Feedback & Lift (ยกขึ้น) ---
-        print("Checking gripper feedback...")
+        time.sleep(0.5)
+
+        # --- 7. Lift & feedback ---
+        print("Checking grip...")
         if self.gripped():
-            print("Success: Box is caught! Lifting up...")
-            # Stop tracking and lift straight up to safe hover height + extra clearance
-            self.move_abs(current_x_mm, init_y_mm, z_hover_tcp + 50.0, 
-                          self.start_rot[0], self.start_rot[1], self.start_rot[2], 
-                          wait=True)
+            print("Success! Lifting...")
+
+            pose = self._read_actual_tcp_pose()
+            cur_z_mm = pose[2] * 1000.0
+
+            dz_up = (z_hover_tcp + 50.0) - cur_z_mm
+
+            self.move_rel(0, 0, dz_up, 0, 0, 0, wait=True)
             return True
+
         else:
-            print("Failed: Did not catch the box. Lifting back to hover...")
+            print("Failed. Resetting...")
             self.gripper_open()
-            self.move_abs(current_x_mm, init_y_mm, z_hover_tcp, 
-                          self.start_rot[0], self.start_rot[1], self.start_rot[2], 
-                          wait=True)
+
+            pose = self._read_actual_tcp_pose()
+            cur_z_mm = pose[2] * 1000.0
+
+            dz_up = z_hover_tcp - cur_z_mm
+
+            self.move_rel(0, 0, dz_up, 0, 0, 0, wait=True)
             return False
 
 def main():
@@ -299,17 +312,44 @@ def main():
         my_arm.disconnect()
     
 if __name__ == '__main__':
-    my_arm = None
-    try:
-        print("Initializing robot arm...")
-        my_arm = arm()  # Example belt speed
-        print("Connection test passed:", my_arm.test_connection())
-        print("Moving to start position...")
-        my_arm.go_to_start()
-        print("Starting main loop. Press Ctrl+C to exit.")
+    my_arm = arm()
 
-    except KeyboardInterrupt:
-        print("Keyboard interrupt received, shutting down.")
-    finally:
-        if my_arm:
-            my_arm.disconnect()
+    # Move to safe start position
+    my_arm.go_to_start()
+    print("Waiting for camera input...")
+
+    while True:
+        success = my_arm.hover_and_catch(0,0)
+
+        if success:
+            print("Pick successful! Moving to drop position...")
+
+            # Example drop position (you can change)
+            my_arm.move_rel(200, 0, 300,
+                                my_arm.start_rot[0],
+                                my_arm.start_rot[1],
+                                my_arm.start_rot[2],
+                                wait=True)
+
+            my_arm.gripper_open()
+            time.sleep(0.5)
+
+                # Return to start
+            my_arm.go_to_start()
+
+        else:
+            print("Pick failed. Waiting for next object...")
+    # my_arm = None
+    # try:
+    #     print("Initializing robot arm...")
+    #     my_arm = arm()  # Example belt speed
+    #     print("Connection test passed:", my_arm.test_connection())
+    #     print("Moving to start position...")
+    #     my_arm.go_to_start()
+    #     print("Starting main loop. Press Ctrl+C to exit.")
+
+    # except KeyboardInterrupt:
+    #     print("Keyboard interrupt received, shutting down.")
+    # finally:
+    #     if my_arm:
+    #         my_arm.disconnect()
