@@ -26,6 +26,7 @@ class arm:
         self.velocity = 0.01  # m/s
         self.acceleration = 0.05  # m/s^2
 
+        self.conveyer_speed = 0.02  # m/s
         self.connect()
 
         # init gripper
