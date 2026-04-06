@@ -6,15 +6,9 @@ camera coordinates -> transform camera to robot base coordinates -> predict moti
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
-from pathlib import Path
 
 #1. Detect box
-repo_root = Path(__file__).resolve().parent
-image_path = repo_root / "test_img" / "box1_nocrop.jpg"
-img = cv2.imread(str(image_path))
-if img is None:
-    raise SystemExit(f"ERROR: Could not load image: {image_path}")
-
+img = cv2.imread(r'C:\Users\Asus\Downloads\Percogrobot_group\2147312-Robotics-Catch-a-box\test_img\box1_nocrop.jpg')
 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 blurred = cv2.GaussianBlur(gray, (5, 5), 0)
 edges = cv2.Canny(blurred, 50, 150, apertureSize=3)
