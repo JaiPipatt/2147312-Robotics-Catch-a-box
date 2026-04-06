@@ -287,9 +287,7 @@ if __name__ == "__main__":
     repo_root = Path(__file__).resolve().parent
     sample_image_path = os.path.join(repo_root, "test_img_crop", "box9_crop.jpg")
 
-
     if os.path.exists(sample_image_path):
         result = detect(sample_image_path)
     else:
         print(f"ERROR: Sample image not found: {sample_image_path}")
-    result = detect(r'D:\Data\Me\CHULA\Study\Robotics\2147312-Robotics-Catch-a-box\test_img_crop\box4_crop.jpg')
