@@ -149,7 +149,7 @@ def find_best_pair(lines, img_height, img_width):
 
 # ── Main detect function ──────────────────────────────────────────────────────
 
-def detect(img_path_or_array, visualize=True, verbose=True):
+def detect(img_path_or_array, visualize=False, verbose=True):
     img = cv2.imread(img_path_or_array) if isinstance(img_path_or_array, str) else img_path_or_array
     if img is None:
         print("ERROR: Could not load image!")
@@ -282,4 +282,4 @@ def visualize_result(result):
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    result = detect(r'D:\Data\Me\CHULA\Study\Robotics\2147312-Robotics-Catch-a-box\test_img_crop\box9_crop.jpg')
+    result = detect(r'D:\Data\Me\CHULA\Study\Robotics\2147312-Robotics-Catch-a-box\test_img_crop\box4_crop.jpg')
