@@ -57,7 +57,7 @@ _hsv_hi = np.array([PINK_H_HI, PINK_S_HI, PINK_V_HI])
 MIN_CONTOUR_AREA = 1500
 
 # ROI exclusion (pixels from each edge, 0 = full frame)
-roi_left   = 170
+roi_left   = 150
 roi_right  = 170
 roi_top    = 0
 roi_bottom = 0
@@ -89,7 +89,7 @@ def _vision_server(port=VISION_PORT):
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(('0.0.0.0', port))
     srv.listen(5)
-    print(f"[Vision server] Listening on port {port}  (protocol: send 'cap!' → receive 'x,y,angle')")
+    print(f"[Vision server] Listening on port {port}  (protocol: send 'cap!' -> receive 'x,y,angle')")
 
     while True:
         try:
@@ -258,10 +258,18 @@ def roi_bounds(img_w, img_h):
     return x1, x2, y1, y2
 
 
-def box_fully_in_frame(box_pts, img_w, img_h):
-    """Return True only if all 4 corners of the rotated box are inside the frame."""
+def box_fully_in_frame(box_pts, img_w, img_h, margin=10):
+    """
+    Return True only if all 4 corners of the rotated box are inside the frame
+    with a safety margin to account for box thickness and rotation.
+    
+    Args:
+        box_pts: 4 corner points of the rotated box
+        img_w, img_h: Image width and height
+        margin: Pixel buffer from frame edges (default 15px)
+    """
     for x, y in box_pts:
-        if x < 0 or x >= img_w or y < 0 or y >= img_h:
+        if x < margin or x >= img_w - margin or y < margin or y >= img_h - margin:
             return False
     return True
 
@@ -296,7 +304,7 @@ def detect(img, model=None):
                     best_pink = frac
                     best_box  = (int(bx1), int(by1), int(bx2), int(by2))
 
-        if best_box is not None and best_pink > 0.05:
+        if best_box is not None and best_pink > 0.01:  # Accept any detection with minimal pink
             bx1, by1, bx2, by2 = best_box
             crop  = roi[by1:by2, bx1:bx2]
             mask_crop = pink_mask(crop)
@@ -310,6 +318,7 @@ def detect(img, model=None):
                     full_mask = np.zeros((img_h, img_w), dtype=np.uint8)
                     full_mask[oy + by1 : oy + by2, ox + bx1 : ox + bx2] = mask_crop
                     cx, cy = res['center']
+                    # Determine if partial: check frame bounds only
                     partial = not box_fully_in_frame(res['box_pts'], img_w, img_h)
                     res.update({'img': img.copy(), 'mask': full_mask, 'mode': 'yolo',
                                 'yolo_box': (ox+bx1, oy+by1, ox+bx2, oy+by2),
@@ -333,6 +342,7 @@ def detect(img, model=None):
     full_mask = np.zeros((img_h, img_w), dtype=np.uint8)
     full_mask[y1:y2, x1:x2] = mask
     cx, cy = res['center']
+    # Determine if partial: check frame bounds only
     partial = not box_fully_in_frame(res['box_pts'], img_w, img_h)
     res.update({'img': img.copy(), 'mask': full_mask, 'mode': 'color',
                 'pos_mm': px_to_mm(cx, cy) if not partial else None,
@@ -447,6 +457,9 @@ def run_realtime(cam_index=CAM_INDEX, model=None):
     cv2.createTrackbar("S hi", WIN_DET, int(_hsv_hi[1]), 255, lambda _: None)
     cv2.createTrackbar("V lo", WIN_DET, int(_hsv_lo[2]), 255, lambda _: None)
     cv2.createTrackbar("V hi", WIN_DET, int(_hsv_hi[2]), 255, lambda _: None)
+    
+    # Create mask window
+    cv2.namedWindow(WIN_MASK)
 
     cap = cv2.VideoCapture(cam_index, cv2.CAP_DSHOW)
     if not cap.isOpened():
@@ -469,12 +482,16 @@ def run_realtime(cam_index=CAM_INDEX, model=None):
             break
 
         # Read trackbars and update live HSV range
-        h_lo = cv2.getTrackbarPos("H lo", WIN_DET)
-        h_hi = cv2.getTrackbarPos("H hi", WIN_DET)
-        s_lo = cv2.getTrackbarPos("S lo", WIN_DET)
-        s_hi = cv2.getTrackbarPos("S hi", WIN_DET)
-        v_lo = cv2.getTrackbarPos("V lo", WIN_DET)
-        v_hi = cv2.getTrackbarPos("V hi", WIN_DET)
+        try:
+            h_lo = cv2.getTrackbarPos("H lo", WIN_DET)
+            h_hi = cv2.getTrackbarPos("H hi", WIN_DET)
+            s_lo = cv2.getTrackbarPos("S lo", WIN_DET)
+            s_hi = cv2.getTrackbarPos("S hi", WIN_DET)
+            v_lo = cv2.getTrackbarPos("V lo", WIN_DET)
+            v_hi = cv2.getTrackbarPos("V hi", WIN_DET)
+        except cv2.error:
+            # Window was closed, exit gracefully
+            break
         _hsv_lo = np.array([h_lo, s_lo, v_lo])
         _hsv_hi = np.array([h_hi, s_hi, v_hi])
 
