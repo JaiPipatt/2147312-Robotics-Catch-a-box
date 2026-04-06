@@ -151,7 +151,7 @@ def find_best_pair(lines, img_height, img_width):
 
 # ── Main detect function ──────────────────────────────────────────────────────
 
-def detect(img_path_or_array, visualize=True, verbose=True):
+def detect(img_path_or_array, visualize=False, verbose=True):
     img = cv2.imread(img_path_or_array) if isinstance(img_path_or_array, str) else img_path_or_array
     if img is None:
         print("ERROR: Could not load image!")
@@ -286,7 +286,6 @@ def visualize_result(result):
 if __name__ == "__main__":
     repo_root = Path(__file__).resolve().parent
     sample_image_path = os.path.join(repo_root, "test_img_crop", "box9_crop.jpg")
-
 
     if os.path.exists(sample_image_path):
         result = detect(sample_image_path)

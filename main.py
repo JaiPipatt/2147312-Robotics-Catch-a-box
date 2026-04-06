@@ -48,7 +48,6 @@ class arm:
             self.g.send(b'SET SPE 255\n')
             self.g.send(b'SET FOR 255\n')
 
-
     def go_to_start(self):
         self.move_abs(self.cam_read_pose[0], self.cam_read_pose[1], self.cam_read_pose[2], self.cam_read_rot[0], self.cam_read_rot[1], self.cam_read_rot[2])
 
@@ -244,6 +243,13 @@ class arm:
         print(f"dx: {dx}, dy: {dy}, dz: {dz}")
         self.move_rel(dx, dy, dz, 0, 0, 0, wait=True)
 
+        # Check if aligned → grab
+        # if abs(target_x_mm - cur_x_mm) < 5.0:  # 5 mm tolerance
+        #     print("Aligned! Plunging...")
+            # break
+
+        # time.sleep(0.05)
+
         # --- 6. Plunge ---
         pose = self._read_actual_tcp_pose()
         cur_z_mm = pose[2] * 1000.0
@@ -251,6 +257,35 @@ class arm:
         dz_down = z_catch_tcp - cur_z_mm
 
         self.move_rel(0, 0, dz_down, 0, 0, 0, wait=True)
+
+        # Close gripper
+        # self.gripper_close()
+        # time.sleep(0.5)
+
+        # --- 7. Lift & feedback ---
+        # print("Checking grip...")
+        # if self.gripped():
+        #     print("Success! Lifting...")
+
+        #     pose = self._read_actual_tcp_pose()
+        #     cur_z_mm = pose[2] * 1000.0
+
+        #     dz_up = (z_hover_tcp + 50.0) - cur_z_mm
+
+        #     self.move_rel(0, 0, dz_up, 0, 0, 0, wait=True)
+        #     return True
+
+        # else:
+        #     print("Failed. Resetting...")
+        #     self.gripper_open()
+
+        #     pose = self._read_actual_tcp_pose()
+        #     cur_z_mm = pose[2] * 1000.0
+
+        #     dz_up = z_hover_tcp - cur_z_mm
+
+        #     self.move_rel(0, 0, dz_up, 0, 0, 0, wait=True)
+        #     return False
 
 def main():
     my_arm = arm()  # Example belt speed
@@ -293,7 +328,6 @@ if __name__ == '__main__':
 
             # Return to start
     my_arm.go_to_start()
-
 
  
     # my_arm = None
