@@ -1,440 +1,239 @@
-import math
+'''
+State 0
+- Move to initial position 116mm, -300mm, 200mm, 0rad, -3.143rad, 0rad
+- Turn on the camera 
+- Open gripper
+State 1
+- Move to the position to detect box 116mm, -293mm, 461mm, 2.215rad, 2.226rad, 0rad
+- Wait until see full box
+    - If center of box is detected
+        -  Save the x, y, ceta, vx
+        - Stop using the camera (still open the camera)
+        - Go to state 2
+    - If cant detect
+        - Still in state 1
+State 2
+- Using function hover by
+    - Within 1 sec (or can adjust to use less time as possible) -> the box going in -x direction of 2 cm then that is the position that the gripper will go hover above the box within 1 sec
+    - If there is tilting -> tilt the gripper
+    - Go to state 3
+State 3
+- Lower the gripper 
+- Close the gripper
+- If can successfully grab
+    - Lift it to the same level as the starting point
+    - success!
+- If not successfully
+    - Open the gripper
+    - Go to state 1
+'''
+import os
 import socket
-import struct
+import subprocess
+import sys
 import time
-from rtde_receive import RTDEReceiveInterface
-import re
+from enum import Enum
+from arm import arm
+
+VISION_HOST = "localhost"
+VISION_PORT = 2025
+VISION_START_TIMEOUT_S = 20.0
 
 
-
-
-class arm:
-    def __init__(self, belt_speed=0.02):  # belt_speed in m/s
-        self.belt_speed = belt_speed
-        # Default connection parameters (from lab setup)
-        self.gripper_ip = "10.10.0.8"
-        self.gripper_port = 63352
-        self.robot_ip = "10.10.0.8"
-        self.robot_port = 30003
-        self.vision_ip = "10.10.0.14"
-        self.vision_port = 2025
-        self.start_pose = [116, -300, 200]  # mm
-        self.start_rot = [0, -180, 0]  # degree
-        self.rtde_r = RTDEReceiveInterface(self.robot_ip)
-        self.cam_read_pose = [192, -307, 380]  # mm, position to read camera coordinates from the vision system
-        self.cam_read_rot = [127, 127, 0]  # degree
-        # Default movement parameters
-        self.velocity = 1  # m/s
-        self.acceleration = 1  # m/s^2
-
-        self.conveyer_speed = 0.02  # m/s
-        # init conveyer to move at the same speed as the box
-
-        self.connect()
-
-        # init gripper
-        self.g.send(b'GET ACT\n')
-        g_recv = str(self.g.recv(10), 'UTF-8')
-        if '1' in g_recv :
-            print ('Gripper Activated')
-        print ('get ACT  == ' + g_recv)
-        self.g.send(b'GET POS\n')
-        g_recv = str(self.g.recv(10), 'UTF-8')
-        if g_recv :
-            self.g.send(b'SET ACT 1\n')
-            g_recv = str(self.g.recv(255), 'UTF-8')
-            print (g_recv)
-            time.sleep(3)
-            self.g.send(b'SET GTO 1\n')
-            self.g.send(b'SET SPE 255\n')
-            self.g.send(b'SET FOR 255\n')
-
-    def go_to_start(self):
-        self.move_abs(self.cam_read_pose[0], self.cam_read_pose[1], self.cam_read_pose[2], self.cam_read_rot[0], self.cam_read_rot[1], self.cam_read_rot[2])
-
-    def connect(self)->None:
-        self.g = self._wait_for_connection(self.gripper_ip, self.gripper_port)
-        self.r = self._wait_for_connection(self.robot_ip, self.robot_port)
-
-        # self.v = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # self.v.connect((self.vision_ip, self.vision_port)) 
-    def test_connection(self)->bool:
-        return (
-            hasattr(self, 'g') and self.g is not None and
-            hasattr(self, 'r') and self.r is not None #and
-            # hasattr(self, 'v') and self.v is not None
-        )
-    def disconnect(self):
-        try:
-            self.g.close()
-        except Exception:
-            pass
-        try:
-            self.r.close()
-        except Exception:
-            pass
-        try:
-            self.v.close()
-        except Exception:
-            pass
-        self.g = None
-        self.r = None
-        self.v = None
-
-    def _wait_for_connection(self, ip: str, port: int, timeout: float = 10.0) -> socket.socket:
-        """Block until a TCP connection succeeds or timeout elapses (no time.sleep used)."""
-        deadline = time.monotonic() + timeout if timeout else None
-        while True:
-            try:
-                return socket.create_connection((ip, port), timeout=1.0)
-            except OSError:
-                if deadline and time.monotonic() >= deadline:
-                    raise ConnectionError(f"Could not connect to {ip}:{port} within {timeout}s")
-    def move_rel(self, x: float, y: float, z: float, rx: float, ry: float, rz: float, v: float = None, a: float = None, wait: bool = True, timeout: float = 10.0, tol: float = 0.002) -> None: # in mm and degree
-        if v is None:
-            v = self.velocity
-        if a is None:
-            a = self.acceleration
-
-        # convert deltas from mm/deg to m/rad
-        dx, dy, dz = x / 1000.0, y / 1000.0, z / 1000.0
-        drx, dry, drz = math.radians(rx), math.radians(ry), math.radians(rz)
-
-        # Capture starting pose to compute target if available
-        start_pose = self._read_actual_tcp_pose()
-        target = None
-        if start_pose is not None and len(start_pose) == 6:
-            target = tuple(cur + delta for cur, delta in zip(start_pose, (dx, dy, dz, drx, dry, drz)))
-
-        command = f"movel(pose_add(get_actual_tcp_pose(), p[{dx}, {dy}, {dz}, {drx}, {dry}, {drz}]), {v}, {a}, 0, 0)\n"
-        self.r.send(command.encode("utf-8"))
-
-        if not wait or target is None:
-            return
-
-        end_time = time.monotonic() + timeout
-        while time.monotonic() < end_time:
-            pose = self._read_actual_tcp_pose()
-            if pose is not None:
-                if all(abs(cur - goal) <= tol for cur, goal in zip(pose, target)):
-                    return
-            time.sleep(0.05)
-
-    def move_abs(self, x: float, y: float, z: float, rx: float, ry: float, rz: float, v: float = None, a: float = None, wait: bool = True, timeout: float = 10.0, tol: float = 0.002) -> None:
-        if v is None:
-            v = self.velocity
-        if a is None:
-            a = self.acceleration
-        # URScript expects meters and radians; inputs here are given in mm/deg from the rest of the script.
-        x_m, y_m, z_m = x / 1000.0, y / 1000.0, z / 1000.0
-        rx_r, ry_r, rz_r = math.radians(rx), math.radians(ry), math.radians(rz)
-        command = f"movel(p[{x_m}, {y_m}, {z_m}, {rx_r}, {ry_r}, {rz_r}], {v}, {a})\n"
-        self.r.send(command.encode("utf-8"))
-        if not wait:
-            return
-
-        target = (x_m, y_m, z_m, rx_r, ry_r, rz_r)
-        end_time = time.monotonic() + timeout
-        while time.monotonic() < end_time:
-            pose = self._read_actual_tcp_pose()
-            # print(f"Current pose: {pose}, Target pose: {target}")
-            if pose is not None:
-                if all(abs(cur - goal) <= tol for cur, goal in zip(pose, target)):
-                    return
-            time.sleep(0.05)
-
-    def _read_actual_tcp_pose(self):
-        """Best-effort read of the current TCP pose from the realtime stream (port 30003)."""
-        try:
-            pose = self.rtde_r.getActualTCPPose()  # returns [x, y, z, rx, ry, rz] in m/rad
-            if pose and len(pose) == 6:
-                return tuple(pose)
-            return None
-        except Exception:
-            return None
-    
-    def get_coordinates(self)->tuple[float, float]: # we care only about x and y
-        try:
-            self.v.send(b'cap!')
-            coor = self.v.recv(255)
-            coor = coor.decode("utf-8").strip()
-            parts = coor.split(',')
-            if len(parts) < 2:
-                return None
-            x = float(parts[0]) / 1000.0
-            y = float(parts[1]) / 1000.0
-            return x, y
-        except Exception:
-            return None
-    def _get_position(self) -> int:
-        """
-        Helper method to request, read, and parse the current gripper position.
-        Returns the integer position, or -1 if the read fails.
-        """
-        self.g.send(b'GET POS\n')
-        
-        try:
-            # Read and decode response
-            g_recv = self.g.recv(10).decode('utf-8').strip()
-            
-            # Extract the first continuous block of digits
-            match = re.search(r'\d+', g_recv)
-            if match:
-                return int(match.group())
-            else:
-                print(f"Invalid position response: {g_recv}")
-                return -1
-        except Exception as e:
-            print(f"Error reading from gripper: {e}")
-            return -1
-    def gripper_open(self, wait: bool = False, tol: int = 5):
-        self.g.send(b'SET POS 0\n')
-        
-        while wait:
-            pos = self._get_position()
-            
-            if pos != -1:
-                print(f"Gripper position: {pos}")
-                if pos <= tol:  # Target is 0
-                    print("Gripper opened successfully.")
-                    return
-                    
-            time.sleep(0.1)
-
-    def gripper_close(self, wait: bool = True, tol: int = 5):
-        self.g.send(b'SET POS 255\n')
-        
-        # Track position stability locally to avoid blocking calls to self.gripped()
-        last_pos = -1
-        stable_time = 0.0
-
-        while wait:
-            pos = self._get_position()
-            
-            if pos == -1:
-                time.sleep(0.1)
-                continue
-
-            print(f"Gripper position: {pos}")
-
-            # Check 1: Did it reach the end without grabbing anything?
-            if pos >= (255 - tol):
-                print("Gripper closed but box not detected. Check alignment or gripper status.")
-                return
-
-            # Check 2: Has it stopped moving? (Meaning it grabbed the box)
-            if pos == last_pos:
-                stable_time += 0.1
-                if stable_time >= 2.0:  # Position hasn't changed for 2 seconds
-                    print("Box gripped successfully.")
-                    return
-            else:
-                # Still moving, reset the stability timer
-                stable_time = 0.0
-                last_pos = pos
-
-            time.sleep(0.1)
-
-    def gripped(self) -> bool:
-        """
-        Standalone method to verify if the gripper is currently holding an object.
-        Returns True if the position remains unchanged for 2 seconds.
-        """
-        start_pos = self._get_position()
-        if start_pos == -1:
-            return False
-            
-        start_time = time.time()
-
-        # Check for 2 seconds
-        while time.time() - start_time < 1.0:
-            time.sleep(0.5)
-            current_pos = self._get_position()
-            
-            # If the position changes at all, it's not securely gripping
-            if current_pos != start_pos:
-                return False
-            if current_pos >= (180):  # If it's fully closed without gripping, also return False
-                return False
-        return True
-            
-            
-    def set_motion_params(self, speed: float = None, acceleration: float = None):
-        if speed is not None:
-            self.velocity = speed
-        if acceleration is not None:
-            self.acceleration = acceleration
-
-    def hover_and_catch(self, init_x_m: float, init_y_m: float) -> bool:
-    
-        # --- 1. Convert camera input (m → mm) ---
-        cam_x_mm = init_x_m * 1000.0
-        cam_y_mm = init_y_m * 1000.0
-
-        # --- 2. Camera → TCP offset 
-        offset_x = 183.3  # mm 
-        offset_y = 0.0     
-        offset_z = -20.0   # need to adjust based on camera height vs TCP***
-
-        # Convert to robot (TCP) coordinates
-        target_x_mm = cam_x_mm + offset_x
-        target_y_mm = cam_y_mm + offset_y
-
-        # --- 3. Heights ---
-        box_height_mm = 130.0
-        safety_margin = 100.0
-
-        z_hover_tcp = box_height_mm + safety_margin + offset_z + 50
-        z_catch_tcp = box_height_mm - 15.0 + offset_z + 50
-
-        print(f"Tracking... Hover Z={z_hover_tcp}mm, Catch Z={z_catch_tcp}mm")
-
-        # --- 4. Conveyor tracking ---
-        belt_speed_mms = self.belt_speed * 1000.0
-
-        # Trigger when TCP aligns with box
-        trigger_grab_x = target_x_mm
-
-        self.gripper_open()
-        # start_time = time.time()
-
-        # --- 5. Hover tracking loop ---
-
-        # # Read current TCP pose
-        pose = self._read_actual_tcp_pose()
-        # if pose is None:
-        #     continue
-
-        cur_x_mm = pose[0] * 1000.0
-        # cur_y_mm = pose[1] * 1000.0
-        cur_z_mm = pose[2] * 1000.0
-        # print(f"Current TCP pose: x={cur_x_mm:.1f}mm, y={cur_y_mm:.1f}mm, z={cur_z_mm:.1f}mm | Target X: {current_target_x_mm:.1f}mm")
-
-        # Compute RELATIVE correction (tool-based)
-        dx = target_x_mm 
-        dy = target_y_mm 
-        dz = z_hover_tcp - cur_z_mm
-
-        print(f"dx: {dx}, dy: {dy}, dz: {dz}")
-        self.move_rel(dx, dy, dz, 0, 0, 0, wait=True)
-
-        # Check if aligned → grab
-        # if abs(target_x_mm - cur_x_mm) < 5.0:  # 5 mm tolerance
-        #     print("Aligned! Plunging...")
-            # break
-
-        # time.sleep(0.05)
-
-        # --- 6. Plunge ---
-        pose = self._read_actual_tcp_pose()
-        cur_z_mm = pose[2] * 1000.0
-
-        dz_down = z_catch_tcp - cur_z_mm
-
-        self.move_rel(0, 0, dz_down, 0, 0, 0, wait=True)
-
-        # Close gripper
-        # self.gripper_close()
-        # time.sleep(0.5)
-
-        # --- 7. Lift & feedback ---
-        # print("Checking grip...")
-        # if self.gripped():
-        #     print("Success! Lifting...")
-
-        #     pose = self._read_actual_tcp_pose()
-        #     cur_z_mm = pose[2] * 1000.0
-
-        #     dz_up = (z_hover_tcp + 50.0) - cur_z_mm
-
-        #     self.move_rel(0, 0, dz_up, 0, 0, 0, wait=True)
-        #     return True
-
-        # else:
-        #     print("Failed. Resetting...")
-        #     self.gripper_open()
-
-        #     pose = self._read_actual_tcp_pose()
-        #     cur_z_mm = pose[2] * 1000.0
-
-        #     dz_up = z_hover_tcp - cur_z_mm
-
-        #     self.move_rel(0, 0, dz_up, 0, 0, 0, wait=True)
-        #     return False
-
-def main():
-    my_arm = arm()  # Example belt speed
+def _vision_server_ready(host: str = VISION_HOST, port: int = VISION_PORT, timeout: float = 1.0) -> bool:
+    """Return True if a cap! request can be served by the local vision server."""
     try:
+        with socket.create_connection((host, port), timeout=timeout) as vision_sock:
+            vision_sock.sendall(b"cap!")
+            reply = vision_sock.recv(255).decode("utf-8", errors="ignore").strip()
+            return len(reply) > 0
+    except OSError:
+        return False
+
+
+def _start_vision_process() -> subprocess.Popen:
+    """Launch boxbox_yolo.py as a child process using the same Python interpreter."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_path = os.path.join(script_dir, "boxbox_yolo.py")
+    if not os.path.exists(script_path):
+        raise FileNotFoundError(f"Could not find vision script: {script_path}")
+    return subprocess.Popen([sys.executable, script_path], cwd=script_dir)
+
+
+def _ensure_vision_server_running(timeout: float = VISION_START_TIMEOUT_S):
+    """
+    Ensure local boxbox_yolo vision server is reachable.
+    Returns a Popen handle only if this function started the process.
+    """
+    if _vision_server_ready():
+        print("[VISION] Vision server already running.")
+        return None
+
+    print("[VISION] Starting boxbox_yolo.py...")
+    proc = _start_vision_process()
+    deadline = time.monotonic() + timeout
+
+    while time.monotonic() < deadline:
+        if _vision_server_ready():
+            print("[VISION] Vision server is ready.")
+            return proc
+
+        if proc.poll() is not None:
+            raise RuntimeError(f"boxbox_yolo.py exited early with code {proc.returncode}")
+
+        time.sleep(0.2)
+
+    try:
+        proc.terminate()
+    except Exception:
+        pass
+    raise TimeoutError(f"Vision server did not become ready within {timeout:.1f}s")
+
+
+def _stop_vision_process(proc) -> None:
+    """Stop auto-started vision process if it is still alive."""
+    if proc is None or proc.poll() is not None:
+        return
+
+    print("[VISION] Stopping auto-started vision process...")
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+# ── 1. State Machine Enum ─────────────────────────────────────────────────────
+class RobotState(Enum):
+    STATE_0 = 0     # Initial position, Open gripper
+    STATE_1 = 1     # Detect position, Wait for FULL box, Save data
+    STATE_2 = 2     # Hover with -X prediction (2cm in 1sec) & Tilt
+    STATE_3 = 3     # Lower, Close, Check Grab -> Lift (Success) OR Open & Retry (Fail)
+
+# ── 2. Main Pipeline ──────────────────────────────────────────────────────────
+def main_pipeline():
+    my_arm = None
+    vision_proc = None
+
+    try:
+        vision_proc = _ensure_vision_server_running()
+        my_arm = arm()
+
+        if not my_arm.test_connection():
+            print("Failed to connect to the robot, gripper, or vision server. Exiting.")
+            return
+
+        current_state = RobotState.STATE_0
+        box_data = None
+        vision_delay = 0.0
+
         while True:
-            coor = my_arm.get_coordinates()
-            if coor is not None:
-                # get x and y from coordinates
-                x, y = coor
-                # move robot to the box
-                my_arm.move(x, y, 0, 0, 0, 0)
-                my_arm.move(0, -0.09, 0, 0, 0, 0)  # move down to hover above the box
-                # hover above the box with same speed and acceleration of the box + close the gripper at the same time (multithreading)
-                while my_arm.gripped() is False:
-                    my_arm.gripper_close() + my_arm.move(0, y+0.01, 0, 0, 0, 0)  # keep hovering with the same speed and acceleration of the box
-
-                    time.sleep(0.5)
+            # =========================================================
+            # STATE 0: Initialization
+            # =========================================================
+            if current_state == RobotState.STATE_0:
+                print("\n[STATE 0] Initialization")
+                print("-> Turn on the camera (YOLO server running)")
                 
-                # check if the box is gripped, if not, pass and wait for the next coordinates from the vision system
-                # if gripped, move the robot to the drop-off location and open the gripper to release the box then exit the loo
+                print("-> Open gripper")
+                my_arm.gripper_open(wait=True)
+                
+                print("-> Move to initial position")
+                my_arm.move_abs(
+                    my_arm.start_pose[0], my_arm.start_pose[1], my_arm.start_pose[2], 
+                    my_arm.start_rot[0], my_arm.start_rot[1], my_arm.start_rot[2], 
+                    wait=True
+                )
+                current_state = RobotState.STATE_1
+
+            # =========================================================
+            # STATE 1: Detect Box
+            # =========================================================
+            elif current_state == RobotState.STATE_1:
+                print("\n[STATE 1] Move to the position to detect box")
+                my_arm.move_abs(
+                    my_arm.cam_read_pose[0], my_arm.cam_read_pose[1], my_arm.cam_read_pose[2], 
+                    my_arm.cam_read_rot[0], my_arm.cam_read_rot[1], my_arm.cam_read_rot[2], 
+                    wait=True
+                )
+                
+                print("-> Wait until see FULL box...")
+                t_start = time.time()
+                
+                # If YOLO sees a partial box, get_coordinates() returns None
+                coor = my_arm.get_coordinates()
+                
+                if coor is not None:
+                    # If center of box is detected (and is fully in frame)
+                    vision_delay = time.time() - t_start
+                    
+                    x, y, ceta = coor
+                    vx = -2.0 # cm/s
+                    
+                    # Save the x, y, ceta, vx
+                    box_data = (x, y, ceta, vx)
+                    print(f"-> Box detected! Saved X:{x:.1f}, Y:{y:.1f}, Ceta:{ceta:.1f}, Vx:{vx}")
+                    
+                    # Stop using the camera / Go to state 2
+                    print("-> Stop using the camera. Go to state 2")
+                    current_state = RobotState.STATE_2
+                else:
+                    # If cant detect -> Still in state 1
+                    time.sleep(0.05)
+
+            # =========================================================
+            # STATE 2: Predictive Hover
+            # =========================================================
+            elif current_state == RobotState.STATE_2:
+                print("\n[STATE 2] Using function hover by...")
+                x, y, ceta, vx = box_data
+                
+                # Using hover function (predicts -X direction and tilts gripper)
+                my_arm.hover_and_catch(x, y, ceta, vision_delay)
+                
+                # Go to state 3
+                current_state = RobotState.STATE_3
+
+            # =========================================================
+            # STATE 3: Grab and Evaluate
+            # =========================================================
+            elif current_state == RobotState.STATE_3:
+                print("\n[STATE 3] Attempting to grab...")
+                
+                # Note: "Lower the gripper" is handled inside hover_and_catch
+                
+                # Close the gripper
+                print("-> Close the gripper")
+                my_arm.gripper_close(wait=True)
+                
+                # If can successfully grab
+                if my_arm.gripped():
+                    print("-> Success! Box grabbed.")
+                    
+                    # Lift it to the same level as the starting point
+                    print("-> Lift it to the same level as the starting point")
+                    my_arm.move_abs(
+                        my_arm.start_pose[0], my_arm.start_pose[1], my_arm.start_pose[2], 
+                        my_arm.start_rot[0], my_arm.start_rot[1], my_arm.start_rot[2], 
+                        wait=True
+                    )
+                    print("!!! SUCCESS! Demo Complete !!!")
+                    break # Task finished
+                    
+                # If not successfully
+                else:
+                    print("-> If not successfully: Open the gripper")
+                    my_arm.gripper_open(wait=True)
+                    
+                    # Go to state 1
+                    print("-> Go to state 1")
+                    current_state = RobotState.STATE_1
+
     except KeyboardInterrupt:
-        print("Keyboard interrupt received, stopping loop.")
+        print("\nPipeline interrupted by user.")
     finally:
-        my_arm.disconnect()
-    
+        if my_arm is not None:
+            my_arm.disconnect()
+        _stop_vision_process(vision_proc)
+
 if __name__ == '__main__':
-    my_arm = arm()
-
-    # # test movement to start position
-    # print('moving to start position...')
-    # my_arm.move_abs(my_arm.start_pose[0], my_arm.start_pose[1], my_arm.start_pose[2], my_arm.start_rot[0], my_arm.start_rot[1], my_arm.start_rot[2])
-
-
-    # # Move to safe start position
-    # print("Moving to cam start position...")
-    # my_arm.go_to_start()
-
-    # success = my_arm.hover_and_catch(0,0)
-
-    # #my_arm.gripper_open()
-    # time.sleep(0.5)
-
-    #         # Return to start
-    # my_arm.go_to_start()
-
-    # test grip
-    my_arm.go_to_start()
-    print("Testing gripper open/close...")
-    print("Opening gripper...")
-    my_arm.gripper_open(wait=True)
-    time.sleep(2)
-    print("Closing gripper...")
-    my_arm.gripper_close(wait=True)
-    while not my_arm.gripped():
-        my_arm.gripper_open(wait=True)
-        time.sleep(0.5)
-        my_arm.gripper_close(wait=True)
-        time.sleep(0.5)
-    if my_arm.gripped():
-        print("Gripper is holding an object.")
-        my_arm.move_abs(my_arm.start_pose[0], my_arm.start_pose[1], my_arm.start_pose[2], my_arm.start_rot[0], my_arm.start_rot[1], my_arm.start_rot[2])
-    # print(my_arm.gripped())
- 
-    # my_arm = None
-    # try:
-    #     print("Initializing robot arm...")
-    #     my_arm = arm()  # Example belt speed
-    #     print("Connection test passed:", my_arm.test_connection())
-    #     print("Moving to start position...")
-    #     my_arm.go_to_start()
-    #     print("Starting main loop. Press Ctrl+C to exit.")
-
-    # except KeyboardInterrupt:
-    #     print("Keyboard interrupt received, shutting down.")
-    # finally:
-    #     if my_arm:
-    #         my_arm.disconnect()
+    main_pipeline()
