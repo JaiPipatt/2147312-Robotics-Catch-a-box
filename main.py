@@ -11,20 +11,20 @@ class arm:
     def __init__(self, belt_speed=0.02):  # belt_speed in m/s
         self.belt_speed = belt_speed
         # Default connection parameters (from lab setup)
-        self.gripper_ip = "10.10.0.61"
+        self.gripper_ip = "10.10.0.8"
         self.gripper_port = 63352
-        self.robot_ip = "10.10.0.61"
+        self.robot_ip = "10.10.0.8"
         self.robot_port = 30003
         self.vision_ip = "10.10.0.14"
         self.vision_port = 2025
         self.start_pose = [116, -300, 200]  # mm
         self.start_rot = [0, -180, 0]  # degree
         self.rtde_r = RTDEReceiveInterface(self.robot_ip)
-        self.cam_read_pose = [116, -307, 319.5]  # mm, position to read camera coordinates from the vision system
+        self.cam_read_pose = [192, -307, 380]  # mm, position to read camera coordinates from the vision system
         self.cam_read_rot = [127, 127, 0]  # degree
         # Default movement parameters
-        self.velocity = 0.01  # m/s
-        self.acceleration = 0.05  # m/s^2
+        self.velocity = 1  # m/s
+        self.acceleration = 1  # m/s^2
 
         self.conveyer_speed = 0.02  # m/s
         # init conveyer to move at the same speed as the box
@@ -106,7 +106,7 @@ class arm:
         if start_pose is not None and len(start_pose) == 6:
             target = tuple(cur + delta for cur, delta in zip(start_pose, (dx, dy, dz, drx, dry, drz)))
 
-        command = f"movel(pose_add(get_actual_tcp_pose(), p[{dx}, {dy}, {dz}, {drx}, {dry}, {drz}]), {v}, {a}, 2, 0)\n"
+        command = f"movel(pose_add(get_actual_tcp_pose(), p[{dx}, {dy}, {dz}, {drx}, {dry}, {drz}]), {v}, {a}, 0, 0)\n"
         self.r.send(command.encode("utf-8"))
 
         if not wait or target is None:
@@ -278,9 +278,12 @@ def main():
     
 if __name__ == '__main__':
     my_arm = arm()
+    print('moving to start position...')
+    my_arm.move_abs(my_arm.start_pose[0], my_arm.start_pose[1], my_arm.start_pose[2], my_arm.start_rot[0], my_arm.start_rot[1], my_arm.start_rot[2])
+
 
     # Move to safe start position
-    print("Moving to start position...")
+    print("Moving to cam start position...")
     my_arm.go_to_start()
 
     success = my_arm.hover_and_catch(0,0)
