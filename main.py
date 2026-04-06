@@ -3,6 +3,7 @@ import socket
 import struct
 import time
 from rtde_receive import RTDEReceiveInterface
+import re
 
 
 
@@ -165,25 +166,99 @@ class arm:
             return x, y
         except Exception:
             return None
-    def gripper_open(self):
-        self.g.send(b'SET POS 0\n')
-    def gripper_close(self):
-        self.g.send(b'SET POS 255\n')
-    def gripped(self)->bool:
+    def _get_position(self) -> int:
+        """
+        Helper method to request, read, and parse the current gripper position.
+        Returns the integer position, or -1 if the read fails.
+        """
         self.g.send(b'GET POS\n')
-        g_recv = str(self.g.recv(10), 'UTF-8')
-        # if the position stays the same for a while, we can assume that the box is gripped, otherwise, it is not gripped
+        
+        try:
+            # Read and decode response
+            g_recv = self.g.recv(10).decode('utf-8').strip()
+            
+            # Extract the first continuous block of digits
+            match = re.search(r'\d+', g_recv)
+            if match:
+                return int(match.group())
+            else:
+                print(f"Invalid position response: {g_recv}")
+                return -1
+        except Exception as e:
+            print(f"Error reading from gripper: {e}")
+            return -1
+    def gripper_open(self, wait: bool = False, tol: int = 5):
+        self.g.send(b'SET POS 0\n')
+        
+        while wait:
+            pos = self._get_position()
+            
+            if pos != -1:
+                print(f"Gripper position: {pos}")
+                if pos <= tol:  # Target is 0
+                    print("Gripper opened successfully.")
+                    return
+                    
+            time.sleep(0.1)
+
+    def gripper_close(self, wait: bool = True, tol: int = 5):
+        self.g.send(b'SET POS 255\n')
+        
+        # Track position stability locally to avoid blocking calls to self.gripped()
+        last_pos = -1
+        stable_time = 0.0
+
+        while wait:
+            pos = self._get_position()
+            
+            if pos == -1:
+                time.sleep(0.1)
+                continue
+
+            print(f"Gripper position: {pos}")
+
+            # Check 1: Did it reach the end without grabbing anything?
+            if pos >= (255 - tol):
+                print("Gripper closed but box not detected. Check alignment or gripper status.")
+                return
+
+            # Check 2: Has it stopped moving? (Meaning it grabbed the box)
+            if pos == last_pos:
+                stable_time += 0.1
+                if stable_time >= 2.0:  # Position hasn't changed for 2 seconds
+                    print("Box gripped successfully.")
+                    return
+            else:
+                # Still moving, reset the stability timer
+                stable_time = 0.0
+                last_pos = pos
+
+            time.sleep(0.1)
+
+    def gripped(self) -> bool:
+        """
+        Standalone method to verify if the gripper is currently holding an object.
+        Returns True if the position remains unchanged for 2 seconds.
+        """
+        start_pos = self._get_position()
+        if start_pos == -1:
+            return False
+            
         start_time = time.time()
-        while True:
+
+        # Check for 2 seconds
+        while time.time() - start_time < 1.0:
             time.sleep(0.5)
-            self.g.send(b'GET POS\n')
-            new_g_recv = str(self.g.recv(10), 'UTF-8')
-            if new_g_recv != g_recv:
+            current_pos = self._get_position()
+            
+            # If the position changes at all, it's not securely gripping
+            if current_pos != start_pos:
                 return False
-            g_recv = new_g_recv
-            # if the position is the same for 2 seconds, we can assume that the box is gripped
-            if time.time() - start_time > 2:
-                return True
+            if current_pos >= (180):  # If it's fully closed without gripping, also return False
+                return False
+        return True
+            
+            
     def set_motion_params(self, speed: float = None, acceleration: float = None):
         if speed is not None:
             self.velocity = speed
@@ -313,22 +388,41 @@ def main():
     
 if __name__ == '__main__':
     my_arm = arm()
-    print('moving to start position...')
-    my_arm.move_abs(my_arm.start_pose[0], my_arm.start_pose[1], my_arm.start_pose[2], my_arm.start_rot[0], my_arm.start_rot[1], my_arm.start_rot[2])
+
+    # # test movement to start position
+    # print('moving to start position...')
+    # my_arm.move_abs(my_arm.start_pose[0], my_arm.start_pose[1], my_arm.start_pose[2], my_arm.start_rot[0], my_arm.start_rot[1], my_arm.start_rot[2])
 
 
-    # Move to safe start position
-    print("Moving to cam start position...")
+    # # Move to safe start position
+    # print("Moving to cam start position...")
+    # my_arm.go_to_start()
+
+    # success = my_arm.hover_and_catch(0,0)
+
+    # #my_arm.gripper_open()
+    # time.sleep(0.5)
+
+    #         # Return to start
+    # my_arm.go_to_start()
+
+    # test grip
     my_arm.go_to_start()
-
-    success = my_arm.hover_and_catch(0,0)
-
-    #my_arm.gripper_open()
-    time.sleep(0.5)
-
-            # Return to start
-    my_arm.go_to_start()
-
+    print("Testing gripper open/close...")
+    print("Opening gripper...")
+    my_arm.gripper_open(wait=True)
+    time.sleep(2)
+    print("Closing gripper...")
+    my_arm.gripper_close(wait=True)
+    while not my_arm.gripped():
+        my_arm.gripper_open(wait=True)
+        time.sleep(0.5)
+        my_arm.gripper_close(wait=True)
+        time.sleep(0.5)
+    if my_arm.gripped():
+        print("Gripper is holding an object.")
+        my_arm.move_abs(my_arm.start_pose[0], my_arm.start_pose[1], my_arm.start_pose[2], my_arm.start_rot[0], my_arm.start_rot[1], my_arm.start_rot[2])
+    # print(my_arm.gripped())
  
     # my_arm = None
     # try:
