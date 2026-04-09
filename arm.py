@@ -4,6 +4,7 @@ import struct
 import time
 from rtde_receive import RTDEReceiveInterface
 import re
+import numpy as np
 
 
 
@@ -12,19 +13,19 @@ class arm:
     def __init__(self, belt_speed=0.02):  # belt_speed in m/s
         self.belt_speed = belt_speed
         # Default connection parameters (from lab setup)
-        self.gripper_ip = "10.10.0.8"
+        self.gripper_ip = "10.10.0.14"
         self.gripper_port = 63352
-        self.robot_ip = "10.10.0.8"
+        self.robot_ip = "10.10.0.14"
         self.robot_port = 30003
         self.vision_port = 2025  # local boxbox_yolo.py server port
         self.start_pose = [116, -300, 200]  # mm
         self.start_rot = [0, -180, 0]  # degree
-        self.rtde_r = RTDEReceiveInterface(self.robot_ip)
-        self.cam_read_pose = [192, -307, 380]  # mm, position to read camera coordinates from the vision system
+        self.rtde_r = self.connect_rtde()
+        self.cam_read_pose = [196, -292, 380]  # mm, position to read camera coordinates from the vision system
         self.cam_read_rot = [127, 127, 0]  # degree
         # Default movement parameters
-        self.velocity = 1  # m/s
-        self.acceleration = 1  # m/s^2
+        self.velocity = 0.5  # m/s
+        self.acceleration = 0.5  # m/s^2
 
         self.conveyer_speed = 0.02  # m/s
         # init conveyer to move at the same speed as the box
@@ -47,6 +48,21 @@ class arm:
             self.g.send(b'SET GTO 1\n')
             self.g.send(b'SET SPE 255\n')
             self.g.send(b'SET FOR 255\n')
+
+    def connect_rtde(self):
+        try:
+            rtde_r = RTDEReceiveInterface(self.robot_ip)
+            
+            # Optional: verify by calling something simple
+            pose = rtde_r.getActualTCPPose()
+            
+            print("✅ RTDE Receive connected successfully")
+            return rtde_r
+
+        except Exception as e:
+            print("❌ Failed to connect RTDE Receive")
+            print(f"Error: {e}")
+            return None
 
     def go_to_start(self):
         self.move_abs(self.cam_read_pose[0], self.cam_read_pose[1], self.cam_read_pose[2], self.cam_read_rot[0], self.cam_read_rot[1], self.cam_read_rot[2])
@@ -280,10 +296,10 @@ class arm:
         except Exception:
             return None
 
-    def hover_and_catch(self, x_mm: float, y_mm: float, ceta_deg: float, vision_delay: float) -> bool:
+    def hover(self, x_mm: float, y_mm: float, ceta_deg: float, vision_delay: float) -> bool:
         # 1. Apply Camera-to-Robot Offset
-        offset_x = 183.3  
-        offset_y = 0.0    
+        offset_x = 122.0
+        offset_y = -15.0    
         box_start_x = x_mm + offset_x
         box_start_y = y_mm + offset_y
 
@@ -292,35 +308,46 @@ class arm:
         safety_margin = 100.0
         offset_z = -20.0 
         z_hover = box_height_mm + safety_margin + offset_z + 50 
-        z_catch = box_height_mm - 15.0 + offset_z + 50
+        # z_catch = box_height_mm - 15.0 + offset_z + 50
 
         # 3. Predict Movement: "going in -x direction of 2 cm within 1 sec"
         belt_vx_mm_s = -20.0 # -2 cm/s
         belt_vy_mm_s = 0.0
         
         # Adjust 'travel_time' to use less time if possible, matching your rule
-        travel_time = 1.0 
+        travel_time = 2.0 
         total_time = travel_time + vision_delay
 
         target_hover_x = box_start_x + (belt_vx_mm_s * total_time)
         target_hover_y = box_start_y + (belt_vy_mm_s * total_time)
 
-        # 4. "If there is tilting -> tilt the gripper"
-        tilt_rz_deg = self.cam_read_rot[2] + ceta_deg
+       
 
-        print(f"[STATE 2] Predicting hover point: Moving {-20.0 * total_time:.1f} mm in -X direction")
-        
+        # 4. "If there is tilting -> tilt the gripper"\
+        if ceta_deg < 0:
+            tilt_rz_deg = -90 + np.abs(ceta_deg)
+        else:
+            tilt_rz_deg = 90 - np.abs(ceta_deg)
+        print(f"Calculated tilt angle: {tilt_rz_deg:.1f}° based on ceta={ceta_deg:.1f}°")
+
+
+        print(f"[STATE 1] Detected box at ({x_mm:.1f}, {y_mm:.1f}), ceta={ceta_deg:.1f}°")
+        print(f"[STATE 2] Applying offset: moving to ({target_hover_x:.1f}, {target_hover_y:.1f}) {tilt_rz_deg:.1f}° to hover above the box start position")
+        # wait for me to press space to continue
+        curremt_pose = self._read_actual_tcp_pose()
+        print(f"current arm pose: {curremt_pose} will move to target hover pose: ({curremt_pose[0]+target_hover_x:.1f}, {curremt_pose[1]+target_hover_y:.1f}, {curremt_pose[2]+z_hover:.1f}) with tilt {curremt_pose[5]+tilt_rz_deg:.1f}°")
+
         # 5. Go hover above the box
-        self.move_abs(target_hover_x, target_hover_y, z_hover, 
-                      self.cam_read_rot[0], self.cam_read_rot[1], tilt_rz_deg, wait=True)
+        self.move_rel(target_hover_x, target_hover_y, 0, 
+                      0, 0, tilt_rz_deg, wait=True)
         
-        # 6. Lower the gripper
-        print("[STATE 3] Lowering the gripper...")
-        old_v = self.velocity
-        self.velocity = 0.15 # Move down quickly
-        self.move_abs(target_hover_x, target_hover_y, z_catch, 
-                      self.cam_read_rot[0], self.cam_read_rot[1], tilt_rz_deg, wait=True)
-        self.velocity = old_v 
+        # # 6. Lower the gripper
+        # print("[STATE 3] Lowering the gripper...")
+        # old_v = self.velocity
+        # self.velocity = 0.15 # Move down quickly
+        # self.move_abs(target_hover_x, target_hover_y, z_catch, 
+        #               self.cam_read_rot[0], self.cam_read_rot[1], tilt_rz_deg, wait=True)
+        # self.velocity = old_v 
         return True
     
 def main():
@@ -352,7 +379,7 @@ if __name__ == '__main__':
 
     # # test movement to start position
     # print('moving to start position...')
-    # my_arm.move_abs(my_arm.start_pose[0], my_arm.start_pose[1], my_arm.start_pose[2], my_arm.start_rot[0], my_arm.start_rot[1], my_arm.start_rot[2])
+    my_arm.move_abs(my_arm.start_pose[0], my_arm.start_pose[1], my_arm.start_pose[2], my_arm.start_rot[0], my_arm.start_rot[1], my_arm.start_rot[2])
 
 
     # # Move to safe start position

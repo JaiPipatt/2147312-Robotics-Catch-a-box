@@ -34,6 +34,7 @@ import sys
 import time
 from enum import Enum
 from arm import arm
+from conveyor import ConveyorController
 
 VISION_HOST = "localhost"
 VISION_PORT = 2025
@@ -57,7 +58,7 @@ def _start_vision_process() -> subprocess.Popen:
     script_path = os.path.join(script_dir, "boxbox_yolo.py")
     if not os.path.exists(script_path):
         raise FileNotFoundError(f"Could not find vision script: {script_path}")
-    return subprocess.Popen([sys.executable, script_path], cwd=script_dir)
+    return subprocess.Popen([sys.executable, script_path, "--silent"], cwd=script_dir)
 
 
 def _ensure_vision_server_running(timeout: float = VISION_START_TIMEOUT_S):
@@ -159,8 +160,11 @@ def main_pipeline():
                 print("-> Wait until see FULL box...")
                 t_start = time.time()
                 
+
+            
                 # If YOLO sees a partial box, get_coordinates() returns None
-                coor = my_arm.get_coordinates()
+                coor = my_arm.get_coordinates() 
+                print(f"  Vision check: coor={coor}, elapsed={time.time() - t_start:.2f}s")
                 
                 if coor is not None:
                     # If center of box is detected (and is fully in frame)
@@ -186,9 +190,15 @@ def main_pipeline():
             elif current_state == RobotState.STATE_2:
                 print("\n[STATE 2] Using function hover by...")
                 x, y, ceta, vx = box_data
+
+                # debug: print current arm pose
+                current_pose = my_arm._read_actual_tcp_pose()
+                print(f"  Current arm pose: {current_pose}")
+
+
                 
                 # Using hover function (predicts -X direction and tilts gripper)
-                my_arm.hover_and_catch(x, y, ceta, vision_delay)
+                my_arm.hover(x, y, ceta, vision_delay)
                 
                 # Go to state 3
                 current_state = RobotState.STATE_3
@@ -199,7 +209,7 @@ def main_pipeline():
             elif current_state == RobotState.STATE_3:
                 print("\n[STATE 3] Attempting to grab...")
                 
-                # Note: "Lower the gripper" is handled inside hover_and_catch
+                my_arm.move_rel(0, 0, -220, 0, 0, 0, wait=True) # Move down a bit to ensure better grip
                 
                 # Close the gripper
                 print("-> Close the gripper")
@@ -236,4 +246,7 @@ def main_pipeline():
         _stop_vision_process(vision_proc)
 
 if __name__ == '__main__':
+    conveyor = ConveyorController()
+    conveyor.start_server()
+    conveyor.shutdown()
     main_pipeline()

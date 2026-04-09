@@ -66,6 +66,7 @@ roi_bottom = 0
 _mtx  = None
 _dist = None
 _undistort_cache = {}
+_center_mm_cache = {}
 
 # Pixel-to-world homography (loaded from calibration.npz if present)
 _H = None
@@ -75,6 +76,13 @@ _latest_lock = threading.Lock()
 _latest = {'valid': False, 'x_mm': 0.0, 'y_mm': 0.0, 'angle': 0.0}
 
 _MORPH_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+SILENT_MODE = False
+
+
+def _log(*args, force=False, **kwargs):
+    """Print helper that can be silenced with --silent."""
+    if force or not SILENT_MODE:
+        print(*args, **kwargs)
 
 # ── Vision server (responds to 'cap!' from the gripper script) ────────────────
 
@@ -89,7 +97,7 @@ def _vision_server(port=VISION_PORT):
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(('0.0.0.0', port))
     srv.listen(5)
-    print(f"[Vision server] Listening on port {port}  (protocol: send 'cap!' -> receive 'x,y,angle')")
+    _log(f"[Vision server] Listening on port {port}  (protocol: send 'cap!' -> receive 'x,y,angle')")
 
     while True:
         try:
@@ -125,23 +133,24 @@ def start_vision_server(port=VISION_PORT):
 def load_camera_params(path="camera_params.npz"):
     global _mtx, _dist
     if not os.path.exists(path):
-        print(f"[INFO] {path} not found – running without undistortion.")
+        _log(f"[INFO] {path} not found – running without undistortion.")
         return False
     cal   = np.load(path)
     _mtx  = cal["mtx"]
     _dist = cal["dist"]
     _undistort_cache.clear()
-    print(f"[INFO] Camera params loaded from '{path}'.")
+    _log(f"[INFO] Camera params loaded from '{path}'.")
     return True
 
 
 def load_calibration(path="calibration.npz"):
     global _H
     if not os.path.exists(path):
-        print(f"[INFO] {path} not found – position will be in pixels only.")
+        _log(f"[INFO] {path} not found – position will be in pixels only.")
         return False
     _H = np.load(path)["H"]
-    print(f"[INFO] Homography loaded from '{path}'.")
+    _center_mm_cache.clear()
+    _log(f"[INFO] Homography loaded from '{path}'.")
     return True
 
 
@@ -152,6 +161,33 @@ def px_to_mm(px, py):
     pt  = np.array([[[px, py]]], dtype=np.float32)
     out = cv2.perspectiveTransform(pt, _H)
     return float(out[0, 0, 0]), float(out[0, 0, 1])
+
+
+def px_to_camera_centered_mm(px, py, img_w, img_h):
+    """
+    Convert pixel coords to camera-centered mm.
+    Coordinate frame: origin at image center, +X up, +Y left.
+    Therefore, moving down gives -X and moving left gives +Y.
+    """
+    point_mm = px_to_mm(px, py)
+    if point_mm is None:
+        return None
+
+    key = (img_w, img_h)
+    center_mm = _center_mm_cache.get(key)
+    if center_mm is None:
+        center_mm = px_to_mm(img_w * 0.5, img_h * 0.5)
+        _center_mm_cache[key] = center_mm
+
+    if center_mm is None:
+        return None
+
+    # Homography frame is +X right, +Y down. Rotate/sign-flip to requested frame.
+    dx = point_mm[0] - center_mm[0]
+    dy = point_mm[1] - center_mm[1]
+    centered_x = -dy
+    centered_y = -dx
+    return centered_x, centered_y
 
 
 def undistort(img):
@@ -178,16 +214,16 @@ def try_load_yolo(model_path):
     """Return a YOLO model or None if ultralytics is not available."""
     if model_path is None or not os.path.exists(model_path):
         if model_path:
-            print(f"[WARNING] Model file not found: {model_path}")
+            _log(f"[WARNING] Model file not found: {model_path}")
         return None
     try:
         from ultralytics import YOLO
         model = YOLO(model_path)
-        print(f"[INFO] YOLO model loaded: {model_path}")
+        _log(f"[INFO] YOLO model loaded: {model_path}")
         return model
     except ImportError:
-        print("[WARNING] ultralytics not installed. Falling back to color mode.")
-        print("          Install with:  .venv/Scripts/pip install ultralytics")
+        _log("[WARNING] ultralytics not installed. Falling back to color mode.")
+        _log("          Install with:  .venv/Scripts/pip install ultralytics")
         return None
 
 # ── Pink color helpers ────────────────────────────────────────────────────────
@@ -322,7 +358,7 @@ def detect(img, model=None):
                     partial = not box_fully_in_frame(res['box_pts'], img_w, img_h)
                     res.update({'img': img.copy(), 'mask': full_mask, 'mode': 'yolo',
                                 'yolo_box': (ox+bx1, oy+by1, ox+bx2, oy+by2),
-                                'pos_mm': px_to_mm(cx, cy) if not partial else None,
+                                'pos_mm': px_to_camera_centered_mm(cx, cy, img_w, img_h) if not partial else None,
                                 'partial': partial})
                     return res
 
@@ -345,7 +381,7 @@ def detect(img, model=None):
     # Determine if partial: check frame bounds only
     partial = not box_fully_in_frame(res['box_pts'], img_w, img_h)
     res.update({'img': img.copy(), 'mask': full_mask, 'mode': 'color',
-                'pos_mm': px_to_mm(cx, cy) if not partial else None,
+                'pos_mm': px_to_camera_centered_mm(cx, cy, img_w, img_h) if not partial else None,
                 'partial': partial})
     return res
 
@@ -420,7 +456,7 @@ def collect_images(cam_index=CAM_INDEX, save_dir="train_img"):
         return
 
     count = len([f for f in os.listdir(save_dir) if f.endswith('.jpg')])
-    print(f"Collecting images into '{save_dir}'. SPACE=save, Q=quit. ({count} existing)")
+    _log(f"Collecting images into '{save_dir}'. SPACE=save, Q=quit. ({count} existing)")
 
     while True:
         ret, frame = cap.read()
@@ -436,7 +472,7 @@ def collect_images(cam_index=CAM_INDEX, save_dir="train_img"):
             path = os.path.join(save_dir, f"frame_{count:04d}.jpg")
             cv2.imwrite(path, frame)
             count += 1
-            print(f"Saved {path}")
+            _log(f"Saved {path}")
 
     cap.release()
     cv2.destroyAllWindows()
@@ -467,8 +503,8 @@ def run_realtime(cam_index=CAM_INDEX, model=None):
         return
 
     mode_str = "YOLO+Color" if model else "Color"
-    print(f"Pink box detection running ({mode_str} mode).")
-    print("Adjust HSV sliders to calibrate pink range. S=save values, Q=quit.")
+    _log(f"Pink box detection running ({mode_str} mode).")
+    _log("Adjust HSV sliders to calibrate pink range. S=save values, Q=quit.")
     start_vision_server(VISION_PORT)
 
     fps_t  = time.time()
@@ -509,7 +545,7 @@ def run_realtime(cam_index=CAM_INDEX, model=None):
                     _latest['x_mm']   = pos_mm[0]
                     _latest['y_mm']   = pos_mm[1]
                     _latest['angle']  = result['orientation']
-                print(f"Pos: ({pos_mm[0]:.1f}, {pos_mm[1]:.1f}) mm  |  Angle: {result['orientation']:.1f} deg")
+                _log(f"Pos: ({pos_mm[0]:.1f}, {pos_mm[1]:.1f}) mm  |  Angle: {result['orientation']:.1f} deg")
             elif partial:
                 with _latest_lock:
                     _latest['valid'] = False
@@ -550,11 +586,11 @@ def run_realtime(cam_index=CAM_INDEX, model=None):
         if key == ord('q'):
             break
         if key == ord('s'):
-            print("\n--- Copy these values into boxbox_yolo.py ---")
-            print(f"PINK_H_LO, PINK_H_HI = {h_lo}, {h_hi}")
-            print(f"PINK_S_LO, PINK_S_HI = {s_lo}, {s_hi}")
-            print(f"PINK_V_LO, PINK_V_HI = {v_lo}, {v_hi}")
-            print("----------------------------------------------\n")
+            _log("\n--- Copy these values into boxbox_yolo.py ---")
+            _log(f"PINK_H_LO, PINK_H_HI = {h_lo}, {h_hi}")
+            _log(f"PINK_S_LO, PINK_S_HI = {s_lo}, {s_hi}")
+            _log(f"PINK_V_LO, PINK_V_HI = {v_lo}, {v_hi}")
+            _log("----------------------------------------------\n")
 
     cap.release()
     cv2.destroyAllWindows()
@@ -569,7 +605,11 @@ if __name__ == "__main__":
                         help="Run image collection mode for YOLO training")
     parser.add_argument("--cam",     type=int, default=CAM_INDEX,
                         help=f"Camera index (default {CAM_INDEX})")
+    parser.add_argument("--silent",  action="store_true",
+                        help="Suppress non-error console output")
     args = parser.parse_args()
+
+    SILENT_MODE = args.silent
 
     load_camera_params("camera_params.npz")
     load_calibration("calibration.npz")
