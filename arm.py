@@ -21,7 +21,7 @@ class arm:
         self.start_pose = [116, -300, 200]  # mm
         self.start_rot = [0, -180, 0]  # degree
         self.rtde_r = self.connect_rtde()
-        self.cam_read_pose = [196, -292, 380]  # mm, position to read camera coordinates from the vision system
+        self.cam_read_pose = [180, -292, 380]  # mm, position to read camera coordinates from the vision system
         self.cam_read_rot = [127, 127, 0]  # degree
         # Default movement parameters
         self.velocity = 0.5  # m/s
@@ -201,7 +201,7 @@ class arm:
             pos = self._get_position()
             
             if pos != -1:
-                print(f"Gripper position: {pos}")
+                # print(f"Gripper position: {pos}")
                 if pos <= tol:  # Target is 0
                     print("Gripper opened successfully.")
                     return
@@ -222,7 +222,7 @@ class arm:
                 time.sleep(0.1)
                 continue
 
-            print(f"Gripper position: {pos}")
+            # print(f"Gripper position: {pos}")
 
             # Check 1: Did it reach the end without grabbing anything?
             if pos >= (255 - tol):
@@ -254,8 +254,7 @@ class arm:
         start_time = time.time()
 
         # Check for 2 seconds
-        while time.time() - start_time < 1.0:
-            time.sleep(0.5)
+        while time.time() - start_time < 0.5:
             current_pos = self._get_position()
             
             # If the position changes at all, it's not securely gripping
@@ -264,6 +263,20 @@ class arm:
             if current_pos >= (180):  # If it's fully closed without gripping, also return False
                 return False
         return True
+    
+    def gripped_box(self) -> bool:
+        start_pos = self._get_position()
+        if start_pos == -1:
+            return False
+            
+        start_time = time.time()
+
+        # if its not fully closed
+        if start_pos < (220):
+            return True
+        return False
+    
+
             
             
     def set_motion_params(self, speed: float = None, acceleration: float = None):
@@ -298,7 +311,7 @@ class arm:
 
     def hover(self, x_mm: float, y_mm: float, ceta_deg: float, vision_delay: float) -> bool:
         # 1. Apply Camera-to-Robot Offset
-        offset_x = 122.0
+        offset_x = 100.0
         offset_y = -15.0    
         box_start_x = x_mm + offset_x
         box_start_y = y_mm + offset_y
@@ -311,7 +324,8 @@ class arm:
         # z_catch = box_height_mm - 15.0 + offset_z + 50
 
         # 3. Predict Movement: "going in -x direction of 2 cm within 1 sec"
-        belt_vx_mm_s = -20.0 # -2 cm/s
+        belt_vx_mm_s = 0.0
+        # belt_vx_mm_s = -20.0 # -2 cm/s
         belt_vy_mm_s = 0.0
         
         # Adjust 'travel_time' to use less time if possible, matching your rule

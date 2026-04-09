@@ -168,7 +168,7 @@ def main_pipeline():
                 
                 if coor is not None:
                     # If center of box is detected (and is fully in frame)
-                    vision_delay = time.time() - t_start
+                    # vision_delay = time.time() - t_start
                     
                     x, y, ceta = coor
                     vx = -2.0 # cm/s
@@ -216,7 +216,7 @@ def main_pipeline():
                 my_arm.gripper_close(wait=True)
                 
                 # If can successfully grab
-                if my_arm.gripped():
+                if my_arm.gripped_box():
                     print("-> Success! Box grabbed.")
                     
                     # Lift it to the same level as the starting point
@@ -246,7 +246,7 @@ def main_pipeline():
         _stop_vision_process(vision_proc)
 
 if __name__ == '__main__':
-    conveyor = ConveyorController()
-    conveyor.start_server()
-    conveyor.shutdown()
+    # conveyor = ConveyorController()
+    # conveyor.start_server()
+    # conveyor.shutdown()
     main_pipeline()
