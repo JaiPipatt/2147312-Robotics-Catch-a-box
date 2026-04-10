@@ -57,7 +57,7 @@ def _vision_server_ready(host: str = VISION_HOST, port: int = VISION_PORT, timeo
 def _start_vision_process() -> subprocess.Popen:
     """Launch boxbox_yolo.py as a child process using the same Python interpreter."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    script_path = os.path.join(script_dir, "boxbox_yolo.py")
+    script_path = os.path.join(script_dir, "boxbox_yolo_trial.py")
     if not os.path.exists(script_path):
         raise FileNotFoundError(f"Could not find vision script: {script_path}")
     return subprocess.Popen([sys.executable, script_path, "--silent"], cwd=script_dir)
@@ -82,7 +82,7 @@ def _ensure_vision_server_running(timeout: float = VISION_START_TIMEOUT_S):
             return proc
 
         if proc.poll() is not None:
-            raise RuntimeError(f"boxbox_yolo.py exited early with code {proc.returncode}")
+            raise RuntimeError(f"boxbox_yolo_trial.py exited early with code {proc.returncode}")
 
         time.sleep(0.2)
 
