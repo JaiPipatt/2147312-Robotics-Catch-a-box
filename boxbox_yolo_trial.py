@@ -526,12 +526,16 @@ def run_realtime(cam_index=CAM_INDEX, model=None):
 
             pos_mm = result.get('pos_mm')
 
-            if pos_mm:
+            # if pos_mm and pos_mm[0] < 80:
+            if pos_mm and np.abs(result['orientation']) >50:
                 with _latest_lock:
                     _latest['valid'] = True
                     _latest['x_mm'] = pos_mm[0]
                     _latest['y_mm'] = pos_mm[1]
                     _latest['angle'] = result['orientation']
+            else:
+                with _latest_lock:
+                    _latest['valid'] = False
 
             mask_bgr = cv2.cvtColor(result['mask'], cv2.COLOR_GRAY2BGR)
             mask_bgr[result['mask'] > 0] = (180, 105, 255)

@@ -250,7 +250,8 @@ def main_pipeline():
                         wait=True
                     )
                     print("!!! SUCCESS! Demo Complete !!!")
-                    break # Task finished
+                    my_arm.gripper_open(wait=False) # Open the gripper to release the box
+                    current_state = RobotState.STATE_1 # Task finished
                     
                 # If not successfully
                 else:

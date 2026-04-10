@@ -24,8 +24,8 @@ class arm:
         self.cam_read_pose = [180, -292, 380]  # mm, position to read camera coordinates from the vision system
         self.cam_read_rot = [127, 127, 0]  # degree
         # Default movement parameters
-        self.velocity = 1.0  # m/s
-        self.acceleration = 1.0  # m/s^2
+        self.velocity = 2.5 # m/s
+        self.acceleration = 2.5  # m/s^2
 
         self.conveyer_speed = 0.02  # m/s
         # init conveyer to move at the same speed as the box
@@ -383,8 +383,8 @@ class arm:
 
     def hover(self, x_mm: float, y_mm: float, ceta_deg: float, vision_delay: float, max_wait_s: float = 3.0, belt_vx_mm_s: float = 0.0) -> bool:
         # 1. Apply Camera-to-Robot Offset
-        offset_x = 60.0
-        offset_y = -15.0    
+        offset_x = 85.0
+        offset_y = 2.0    
         box_start_x = x_mm + offset_x
         box_start_y = y_mm + offset_y
 
