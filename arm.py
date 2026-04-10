@@ -24,8 +24,8 @@ class arm:
         self.cam_read_pose = [180, -292, 380]  # mm, position to read camera coordinates from the vision system
         self.cam_read_rot = [127, 127, 0]  # degree
         # Default movement parameters
-        self.velocity = 0.5  # m/s
-        self.acceleration = 0.5  # m/s^2
+        self.velocity = 1.0  # m/s
+        self.acceleration = 1.0  # m/s^2
 
         self.conveyer_speed = 0.02  # m/s
         # init conveyer to move at the same speed as the box
@@ -101,46 +101,64 @@ class arm:
                 if deadline and time.monotonic() >= deadline:
                     raise ConnectionError(f"Could not connect to {ip}:{port} within {timeout}s")
 
-    def _query_boxbox(self):
+    def _query_boxbox(self, timeout_s: float = 1.0):
         """Request one coordinate sample from local boxbox_yolo.py vision server."""
         try:
-            with socket.create_connection(("localhost", self.vision_port), timeout=1.0) as vision_sock:
-                vision_sock.send(b'cap!')
+            with socket.create_connection(("localhost", self.vision_port), timeout=timeout_s) as vision_sock:
+                vision_sock.settimeout(timeout_s)
+                vision_sock.sendall(b'cap!')
                 return vision_sock.recv(255).decode("utf-8").strip()
         except Exception:
             return None
 
-    def move_rel(self, x: float, y: float, z: float, rx: float, ry: float, rz: float, v: float = None, a: float = None, wait: bool = True, timeout: float = 10.0, tol: float = 0.002) -> None: # in mm and degree
+    def move_rel(self, x: float, y: float, z: float, rx: float, ry: float, rz: float,
+             v: float = None, a: float = None, wait: bool = True,
+             timeout: float = 10.0, tol: float = 0.002, tol_r: float = 0.01) -> bool:
+
         if v is None:
             v = self.velocity
         if a is None:
             a = self.acceleration
 
-        # convert deltas from mm/deg to m/rad
         dx, dy, dz = x / 1000.0, y / 1000.0, z / 1000.0
         drx, dry, drz = math.radians(rx), math.radians(ry), math.radians(rz)
 
-        # Capture starting pose to compute target if available
         start_pose = self._read_actual_tcp_pose()
         target = None
         if start_pose is not None and len(start_pose) == 6:
-            target = tuple(cur + delta for cur, delta in zip(start_pose, (dx, dy, dz, drx, dry, drz)))
+            target = tuple(cur + delta for cur, delta in zip(
+                start_pose, (dx, dy, dz, drx, dry, drz)
+            ))
 
         command = f"movel(pose_add(get_actual_tcp_pose(), p[{dx}, {dy}, {dz}, {drx}, {dry}, {drz}]), {v}, {a}, 0, 0)\n"
         self.r.send(command.encode("utf-8"))
 
         if not wait or target is None:
-            return
+            return True
 
         end_time = time.monotonic() + timeout
+        last_pose = None
+
         while time.monotonic() < end_time:
             pose = self._read_actual_tcp_pose()
             if pose is not None:
-                if all(abs(cur - goal) <= tol for cur, goal in zip(pose, target)):
-                    return
+                last_pose = pose
+
+                # ✅ ONLY position check
+                if all(abs(pose[i] - target[i]) <= tol for i in range(3)):
+                    return True
+
             time.sleep(0.05)
 
-    def move_abs(self, x: float, y: float, z: float, rx: float, ry: float, rz: float, v: float = None, a: float = None, wait: bool = True, timeout: float = 10.0, tol: float = 0.002) -> None:
+        if last_pose is not None:
+            pos_err = max(abs(last_pose[i] - target[i]) for i in range(3))
+            print(f"[MOVE_REL] Wait timeout after {timeout:.2f}s (pos_err={pos_err:.4f})")
+        else:
+            print(f"[MOVE_REL] Wait timeout after {timeout:.2f}s (no RTDE pose read)")
+
+        return False
+
+    def move_abs(self, x: float, y: float, z: float, rx: float, ry: float, rz: float, v: float = None, a: float = None, wait: bool = True, timeout: float = 10.0, tol: float = 0.002) -> bool:
         if v is None:
             v = self.velocity
         if a is None:
@@ -151,17 +169,26 @@ class arm:
         command = f"movel(p[{x_m}, {y_m}, {z_m}, {rx_r}, {ry_r}, {rz_r}], {v}, {a})\n"
         self.r.send(command.encode("utf-8"))
         if not wait:
-            return
+            return True
 
         target = (x_m, y_m, z_m, rx_r, ry_r, rz_r)
         end_time = time.monotonic() + timeout
+        last_pose = None
         while time.monotonic() < end_time:
             pose = self._read_actual_tcp_pose()
             # print(f"Current pose: {pose}, Target pose: {target}")
             if pose is not None:
+                last_pose = pose
                 if all(abs(cur - goal) <= tol for cur, goal in zip(pose, target)):
-                    return
+                    return True
             time.sleep(0.05)
+
+        if last_pose is not None:
+            max_err = max(abs(cur - goal) for cur, goal in zip(last_pose, target))
+            print(f"[MOVE_ABS] Wait timeout after {timeout:.2f}s (max error {max_err:.4f})")
+        else:
+            print(f"[MOVE_ABS] Wait timeout after {timeout:.2f}s (no RTDE pose read)")
+        return False
 
     def _read_actual_tcp_pose(self):
         """Best-effort read of the current TCP pose from the realtime stream (port 30003)."""
@@ -210,37 +237,38 @@ class arm:
 
     def gripper_close(self, wait: bool = True, tol: int = 5):
         self.g.send(b'SET POS 255\n')
+        time.sleep(0.5)  # Short delay to allow command to take effect before checking position
         
-        # Track position stability locally to avoid blocking calls to self.gripped()
-        last_pos = -1
-        stable_time = 0.0
+        # # Track position stability locally to avoid blocking calls to self.gripped()
+        # last_pos = -1
+        # stable_time = 0.0
 
-        while wait:
-            pos = self._get_position()
+        # while wait:
+        #     pos = self._get_position()
             
-            if pos == -1:
-                time.sleep(0.1)
-                continue
+        #     if pos == -1:
+        #         time.sleep(0.1)
+        #         continue
 
-            # print(f"Gripper position: {pos}")
+        #     # print(f"Gripper position: {pos}")
 
-            # Check 1: Did it reach the end without grabbing anything?
-            if pos >= (255 - tol):
-                print("Gripper closed but box not detected. Check alignment or gripper status.")
-                return
+        #     # Check 1: Did it reach the end without grabbing anything?
+        #     if pos >= (255 - tol):
+        #         print("Gripper closed but box not detected. Check alignment or gripper status.")
+        #         return
 
-            # Check 2: Has it stopped moving? (Meaning it grabbed the box)
-            if pos == last_pos:
-                stable_time += 0.1
-                if stable_time >= 2.0:  # Position hasn't changed for 2 seconds
-                    print("Box gripped successfully.")
-                    return
-            else:
-                # Still moving, reset the stability timer
-                stable_time = 0.0
-                last_pos = pos
+        #     # Check 2: Has it stopped moving? (Meaning it grabbed the box)
+        #     if pos == last_pos:
+        #         stable_time += 0.1
+        #         if stable_time >= 2.0:  # Position hasn't changed for 2 seconds
+        #             print("Box gripped successfully.")
+        #             return
+        #     else:
+        #         # Still moving, reset the stability timer
+        #         stable_time = 0.0
+        #         last_pos = pos
 
-            time.sleep(0.1)
+            # time.sleep(0.1)
 
     def gripped(self) -> bool:
         """
@@ -285,14 +313,14 @@ class arm:
         if acceleration is not None:
             self.acceleration = acceleration
 
-    def get_coordinates(self):
+    def get_coordinates(self, timeout_s: float = 0.2):
         """
         Sends 'cap!' to boxbox_yolo.py.
         If box is FULL, returns (x_mm, y_mm, ceta_deg).
         If box is missing or PARTIAL, returns None.
         """
         try:
-            response = self._query_boxbox()
+            response = self._query_boxbox(timeout_s=timeout_s)
             
             # YOLO script sends "none" if the box is cut off by the edge (partial=True)
             if response is None or response == 'none' or len(response) == 0:
@@ -309,60 +337,85 @@ class arm:
         except Exception:
             return None
 
-    def hover(self, x_mm: float, y_mm: float, ceta_deg: float, vision_delay: float) -> bool:
+    def find_intercept_x_pos(x, y, z, a, v, v_box, t_delay, max_time=5.0):
+        # If max speed too low, can't catch horizontal motion
+        if v <= 2:
+            return None
+
+        # Adjust initial position to account for delay
+        x = x + v_box * t_delay
+
+        # time it takes for the gripper to reach max speed 
+        t_switch = 2 * v / a 
+
+        # distance gripper can travel in time t
+        def my_dist(t):
+            if t < t_switch:
+                return a * t * t / 4.0
+            else:
+                return (v * v) / a + v * (t - t_switch)
+
+        # distance to moving box
+        def target_dist(t):
+            return math.sqrt((x + v_box * t)**2 + y*y + z*z)
+
+        # difference (want >= 0)
+        def f(t):
+            return my_dist(t) - target_dist(t)
+
+        # Start search from t_delay
+        left, right = t_delay, max_time
+
+        # If even at max_time we can't catch → no solution
+        if f(right) < 0:
+            return None
+
+        for _ in range(60):
+            mid = (left + right) / 2.0
+            if f(mid) >= 0:
+                right = mid
+            else:
+                left = mid
+
+        t_intercept = right
+
+        return x + v_box * t_intercept
+
+    def hover(self, x_mm: float, y_mm: float, ceta_deg: float, vision_delay: float, max_wait_s: float = 3.0, belt_vx_mm_s: float = 0.0) -> bool:
         # 1. Apply Camera-to-Robot Offset
-        offset_x = 100.0
+        offset_x = 60.0
         offset_y = -15.0    
         box_start_x = x_mm + offset_x
         box_start_y = y_mm + offset_y
 
-        # 2. Set Heights
-        box_height_mm = 130.0
-        safety_margin = 100.0
-        offset_z = -20.0 
-        z_hover = box_height_mm + safety_margin + offset_z + 50 
-        # z_catch = box_height_mm - 15.0 + offset_z + 50
 
-        # 3. Predict Movement: "going in -x direction of 2 cm within 1 sec"
-        belt_vx_mm_s = 0.0
-        # belt_vx_mm_s = -20.0 # -2 cm/s
-        belt_vy_mm_s = 0.0
-        
-        # Adjust 'travel_time' to use less time if possible, matching your rule
-        travel_time = 2.0 
-        total_time = travel_time + vision_delay
 
-        target_hover_x = box_start_x + (belt_vx_mm_s * total_time)
-        target_hover_y = box_start_y + (belt_vy_mm_s * total_time)
+        target_hover_x = box_start_x#+self.find_intercept_x_pos(box_start_x, box_start_y, 0, self.acceleration*1000, self.velocity*1000, belt_vx_mm_s, vision_delay)
+        target_hover_y = box_start_y # + (belt_vy_mm_s * total_time)
 
-       
-
-        # 4. "If there is tilting -> tilt the gripper"\
         if ceta_deg < 0:
             tilt_rz_deg = -90 + np.abs(ceta_deg)
         else:
             tilt_rz_deg = 90 - np.abs(ceta_deg)
         print(f"Calculated tilt angle: {tilt_rz_deg:.1f}° based on ceta={ceta_deg:.1f}°")
-
-
-        print(f"[STATE 1] Detected box at ({x_mm:.1f}, {y_mm:.1f}), ceta={ceta_deg:.1f}°")
-        print(f"[STATE 2] Applying offset: moving to ({target_hover_x:.1f}, {target_hover_y:.1f}) {tilt_rz_deg:.1f}° to hover above the box start position")
-        # wait for me to press space to continue
-        curremt_pose = self._read_actual_tcp_pose()
-        print(f"current arm pose: {curremt_pose} will move to target hover pose: ({curremt_pose[0]+target_hover_x:.1f}, {curremt_pose[1]+target_hover_y:.1f}, {curremt_pose[2]+z_hover:.1f}) with tilt {curremt_pose[5]+tilt_rz_deg:.1f}°")
+        print(f" Pose from camera + offset: ({target_hover_x:.1f}, {target_hover_y:.1f}) {tilt_rz_deg:.1f}° to hover above the box start position")      
+        current_pose = self._read_actual_tcp_pose()
+        if current_pose is not None:
+            print(f"current arm pose: {current_pose} will move to target hover pose: ({current_pose[0]+target_hover_x:.1f}, {current_pose[1]+target_hover_y:.1f}, {current_pose[2]:.1f}) with tilt {current_pose[5]+tilt_rz_deg:.1f}°")
+        else:
+            print("current arm pose unavailable, sending relative hover move anyway")
 
         # 5. Go hover above the box
-        self.move_rel(target_hover_x, target_hover_y, 0, 
-                      0, 0, tilt_rz_deg, wait=True)
-        
-        # # 6. Lower the gripper
-        # print("[STATE 3] Lowering the gripper...")
-        # old_v = self.velocity
-        # self.velocity = 0.15 # Move down quickly
-        # self.move_abs(target_hover_x, target_hover_y, z_catch, 
-        #               self.cam_read_rot[0], self.cam_read_rot[1], tilt_rz_deg, wait=True)
-        # self.velocity = old_v 
-        return True
+        hover_start = time.monotonic()
+        reached = self.move_rel(target_hover_x, target_hover_y, -100,
+                                0, 0, tilt_rz_deg, wait=True, timeout=max_wait_s)
+        hover_elapsed = time.monotonic() - hover_start
+        if reached:
+            print(f"[HOVER] Reached hover target in {hover_elapsed:.2f}s")
+        else:
+            print(f"[HOVER] Timed out after {hover_elapsed:.2f}s; continuing")
+    
+        return reached
     
 def main():
     my_arm = arm()  # Example belt speed
@@ -394,7 +447,7 @@ if __name__ == '__main__':
     # # test movement to start position
     # print('moving to start position...')
     my_arm.move_abs(my_arm.start_pose[0], my_arm.start_pose[1], my_arm.start_pose[2], my_arm.start_rot[0], my_arm.start_rot[1], my_arm.start_rot[2])
-
+    my_arm.go_to_start()
 
     # # Move to safe start position
     # print("Moving to cam start position...")
@@ -409,7 +462,6 @@ if __name__ == '__main__':
     # my_arm.go_to_start()
 
     # test grip
-    my_arm.go_to_start()
     # print("Testing gripper open/close...")
     # print("Opening gripper...")
     # my_arm.gripper_open(wait=True)

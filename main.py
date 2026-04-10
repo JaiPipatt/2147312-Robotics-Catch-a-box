@@ -39,6 +39,8 @@ from conveyor import ConveyorController
 VISION_HOST = "localhost"
 VISION_PORT = 2025
 VISION_START_TIMEOUT_S = 20.0
+VISION_POLL_TIMEOUT_S = 0.15
+STATE1_POLL_SLEEP_S = 0.02
 
 
 def _vision_server_ready(host: str = VISION_HOST, port: int = VISION_PORT, timeout: float = 1.0) -> bool:
@@ -116,7 +118,7 @@ def main_pipeline():
     vision_proc = None
 
     try:
-        vision_proc = _ensure_vision_server_running()
+        vision_proc = _ensure_vision_server_running()    
         my_arm = arm()
 
         if not my_arm.test_connection():
@@ -126,6 +128,8 @@ def main_pipeline():
         current_state = RobotState.STATE_0
         box_data = None
         vision_delay = 0.0
+        state1_positioned = False
+        state1_poll_count = 0
 
         while True:
             # =========================================================
@@ -144,31 +148,36 @@ def main_pipeline():
                     my_arm.start_rot[0], my_arm.start_rot[1], my_arm.start_rot[2], 
                     wait=True
                 )
+                state1_positioned = False
                 current_state = RobotState.STATE_1
 
             # =========================================================
             # STATE 1: Detect Box
             # =========================================================
             elif current_state == RobotState.STATE_1:
-                print("\n[STATE 1] Move to the position to detect box")
-                my_arm.move_abs(
-                    my_arm.cam_read_pose[0], my_arm.cam_read_pose[1], my_arm.cam_read_pose[2], 
-                    my_arm.cam_read_rot[0], my_arm.cam_read_rot[1], my_arm.cam_read_rot[2], 
-                    wait=True
-                )
-                
-                print("-> Wait until see FULL box...")
-                t_start = time.time()
+                if not state1_positioned:
+                    print("\n[STATE 1] Move to the position to detect box")
+                    my_arm.move_abs(
+                        my_arm.cam_read_pose[0], my_arm.cam_read_pose[1], my_arm.cam_read_pose[2], 
+                        my_arm.cam_read_rot[0], my_arm.cam_read_rot[1], my_arm.cam_read_rot[2], 
+                        wait=True
+                    )
+                    state1_positioned = True
+                    state1_poll_count = 0
+                    print("-> Wait until see FULL box...")
+
+                t_start = time.monotonic()
                 
 
             
                 # If YOLO sees a partial box, get_coordinates() returns None
-                coor = my_arm.get_coordinates() 
-                print(f"  Vision check: coor={coor}, elapsed={time.time() - t_start:.2f}s")
+                coor = my_arm.get_coordinates(timeout_s=VISION_POLL_TIMEOUT_S)
+                poll_elapsed = time.monotonic() - t_start
                 
                 if coor is not None:
                     # If center of box is detected (and is fully in frame)
                     # vision_delay = time.time() - t_start
+                    vision_delay = poll_elapsed
                     
                     x, y, ceta = coor
                     vx = -2.0 # cm/s
@@ -176,13 +185,18 @@ def main_pipeline():
                     # Save the x, y, ceta, vx
                     box_data = (x, y, ceta, vx)
                     print(f"-> Box detected! Saved X:{x:.1f}, Y:{y:.1f}, Ceta:{ceta:.1f}, Vx:{vx}")
+                    print(f"  Vision check: coor={coor}, elapsed={poll_elapsed:.3f}s")
                     
                     # Stop using the camera / Go to state 2
                     print("-> Stop using the camera. Go to state 2")
+                    state1_positioned = False
                     current_state = RobotState.STATE_2
                 else:
                     # If cant detect -> Still in state 1
-                    time.sleep(0.05)
+                    state1_poll_count += 1
+                    if state1_poll_count % 10 == 0:
+                        print(f"  Vision polling... coor=None, last elapsed={poll_elapsed:.3f}s")
+                    time.sleep(STATE1_POLL_SLEEP_S)
 
             # =========================================================
             # STATE 2: Predictive Hover
@@ -198,7 +212,13 @@ def main_pipeline():
 
                 
                 # Using hover function (predicts -X direction and tilts gripper)
-                my_arm.hover(x, y, ceta, vision_delay)
+                hover_start = time.monotonic()
+                hover_ok = my_arm.hover(x, y, ceta, vision_delay, max_wait_s=3.0, belt_vx_mm_s=20.0)
+                hover_elapsed = time.monotonic() - hover_start
+                if hover_ok:
+                    print(f"-> Hovering above the predicted box position with tilt applied in {hover_elapsed:.2f}s")
+                else:
+                    print(f"-> Hover wait timed out after {hover_elapsed:.2f}s; continuing to grasp")
                 
                 # Go to state 3
                 current_state = RobotState.STATE_3
@@ -209,16 +229,19 @@ def main_pipeline():
             elif current_state == RobotState.STATE_3:
                 print("\n[STATE 3] Attempting to grab...")
                 
-                my_arm.move_rel(0, 0, -220, 0, 0, 0, wait=True) # Move down a bit to ensure better grip
+                my_arm.move_rel(0, 0, -115, 0, 0, 0, wait=True) # Move down a bit to ensure better grip
                 
                 # Close the gripper
                 print("-> Close the gripper")
                 my_arm.gripper_close(wait=True)
                 
                 # If can successfully grab
-                if my_arm.gripped_box():
+                if True:
+                    # time.sleep(0.5) # Wait a moment to ensure gripper has fully closed and box is secured
                     print("-> Success! Box grabbed.")
                     
+
+                    # !!! UNFIX: CHANGE TO PLACE THE BOX AT SOME FIXED LOCATION AND GO BACK TO STATE 1 INSTEAD OF LIFTING UP THEN SUCCESS 
                     # Lift it to the same level as the starting point
                     print("-> Lift it to the same level as the starting point")
                     my_arm.move_abs(
@@ -236,6 +259,7 @@ def main_pipeline():
                     
                     # Go to state 1
                     print("-> Go to state 1")
+                    state1_positioned = False
                     current_state = RobotState.STATE_1
 
     except KeyboardInterrupt:

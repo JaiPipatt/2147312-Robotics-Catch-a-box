@@ -56,6 +56,7 @@ class ConveyorController:
         self.activate_tcp()
         self.power_on()
         self.set_velocity(velocity)
+        time.sleep(3)
         self.jog_forward()
         print("Conveyor running... Press Ctrl+C to stop")
 
@@ -83,8 +84,20 @@ class ConveyorController:
 if __name__ == "__main__":
     conveyor = ConveyorController()
 
-    conveyor.start_server()
-    conveyor.start_conveyor(velocity=50)
+    # conveyor.start_server()
+    conveyor.activate_tcp()
+    # input("Press Enter to start the conveyor...")
+    # conveyor.power_on()
+    # input("Press Enter to set velocity...")
+    # conveyor.set_velocity(50)
+    # time.sleep(3)
+    # input("Press Enter to start jogging forward...")
+    # conveyor.jog_forward()
+    # time.sleep(10)  # Let it run for a while
+    # conveyor.stop()
+    conveyor.power_off()
+    
+    # conveyor.start_conveyor(velocity=50)
 
-    conveyor.run_forever()
-    conveyor.close()
+    # conveyor.run_forever()
+    # conveyor.close()
