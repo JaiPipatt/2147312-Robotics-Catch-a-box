@@ -407,7 +407,7 @@ class arm:
 
         # 5. Go hover above the box
         hover_start = time.monotonic()
-        reached = self.move_rel(target_hover_x, target_hover_y, -100,
+        reached = self.move_rel(target_hover_x, target_hover_y, -215,
                                 0, 0, tilt_rz_deg, wait=True, timeout=max_wait_s)
         hover_elapsed = time.monotonic() - hover_start
         if reached:

@@ -229,7 +229,7 @@ def main_pipeline():
             elif current_state == RobotState.STATE_3:
                 print("\n[STATE 3] Attempting to grab...")
                 
-                my_arm.move_rel(0, 0, -115, 0, 0, 0, wait=True) # Move down a bit to ensure better grip
+                # my_arm.move_rel(0, 0, -115, 0, 0, 0, wait=True) # Move down a bit to ensure better grip
                 
                 # Close the gripper
                 print("-> Close the gripper")
