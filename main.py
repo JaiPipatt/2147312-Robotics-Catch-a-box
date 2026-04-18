@@ -20,8 +20,8 @@ State 2
 State 3
 - Lower the gripper 
 - Close the gripper
+- Lift it to the same level as the starting point
 - If can successfully grab
-    - Lift it to the same level as the starting point
     - success!
 - If not successfully
     - Open the gripper
@@ -150,6 +150,7 @@ def main_pipeline():
                 )
                 state1_positioned = False
                 current_state = RobotState.STATE_1
+                input("Press Enter to continue...")
 
             # =========================================================
             # STATE 1: Detect Box
@@ -235,33 +236,36 @@ def main_pipeline():
                 print("-> Close the gripper")
                 my_arm.gripper_close(wait=True)
                 
-                # If can successfully grab
-                if True:
-                    # time.sleep(0.5) # Wait a moment to ensure gripper has fully closed and box is secured
-                    print("-> Success! Box grabbed.")
+                # # If can successfully grab
+                # if True:
+                #     # time.sleep(0.5) # Wait a moment to ensure gripper has fully closed and box is secured
+                #     print("-> Success! Box grabbed.")
                     
 
-                    # !!! UNFIX: CHANGE TO PLACE THE BOX AT SOME FIXED LOCATION AND GO BACK TO STATE 1 INSTEAD OF LIFTING UP THEN SUCCESS 
-                    # Lift it to the same level as the starting point
-                    print("-> Lift it to the same level as the starting point")
-                    my_arm.move_abs(
-                        my_arm.start_pose[0], my_arm.start_pose[1], my_arm.start_pose[2], 
-                        my_arm.start_rot[0], my_arm.start_rot[1], my_arm.start_rot[2], 
-                        wait=True
-                    )
+                #     # !!! UNFIX: CHANGE TO PLACE THE BOX AT SOME FIXED LOCATION AND GO BACK TO STATE 1 INSTEAD OF LIFTING UP THEN SUCCESS 
+                #     # Lift it to the same level as the starting point
+                #     print("-> Lift it to the same level as the starting point")
+                # my_arm.move_abs(
+                #     my_arm.start_pose[0], my_arm.start_pose[1], my_arm.start_pose[2], 
+                #     my_arm.start_rot[0], my_arm.start_rot[1], my_arm.start_rot[2], 
+                #     wait=True
+                # )
+
+                my_arm.move_rel( 0.0, 0.0, 35.0, 0.0, 0.0, 0.0, wait=True)
+                print('-> moved to same level as starting point')
+                time.sleep(0.5) # Wait a moment to ensure gripper has fully closed and box is secured
+                if my_arm.box_gripped():
                     print("!!! SUCCESS! Demo Complete !!!")
-                    my_arm.gripper_open(wait=False) # Open the gripper to release the box
-                    current_state = RobotState.STATE_1 # Task finished
-                    
-                # If not successfully
+                    # wait for user press space to continuee
+                    input("Press Enter to continue...")
+                    current_state = RobotState.STATE_0 # Task finished
                 else:
-                    print("-> If not successfully: Open the gripper")
-                    my_arm.gripper_open(wait=True)
+                    print("-> Grab failed. Box not securely held.")
+                    my_arm.gripper_open(wait=True) # Open the gripper to drop the box
+                    print("-> retrying...")
+                    current_state = RobotState.STATE_1 # Go back to state 1 to retry
+                    state1_positioned = False # Force repositioning in state 1 for better vision next time
                     
-                    # Go to state 1
-                    print("-> Go to state 1")
-                    state1_positioned = False
-                    current_state = RobotState.STATE_1
 
     except KeyboardInterrupt:
         print("\nPipeline interrupted by user.")

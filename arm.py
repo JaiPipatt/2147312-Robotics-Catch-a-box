@@ -27,6 +27,9 @@ class arm:
         self.velocity = 2.5 # m/s
         self.acceleration = 2.5  # m/s^2
 
+        # self.velocity = 0.5 # m/s
+        # self.acceleration = 0.5  # m/s^2
+
         self.conveyer_speed = 0.02  # m/s
         # init conveyer to move at the same speed as the box
 
@@ -237,7 +240,7 @@ class arm:
 
     def gripper_close(self, wait: bool = True, tol: int = 5):
         self.g.send(b'SET POS 255\n')
-        time.sleep(0.5)  # Short delay to allow command to take effect before checking position
+        time.sleep(0.4)  # Short delay to allow command to take effect before checking position
         
         # # Track position stability locally to avoid blocking calls to self.gripped()
         # last_pos = -1
@@ -270,25 +273,25 @@ class arm:
 
             # time.sleep(0.1)
 
-    def gripped(self) -> bool:
+    def box_gripped(self) -> bool:
         """
         Standalone method to verify if the gripper is currently holding an object.
         Returns True if the position remains unchanged for 2 seconds.
         """
-        start_pos = self._get_position()
-        if start_pos == -1:
-            return False
+        # start_pos = self._get_position()
+        # if start_pos == -1:
+            # return False
             
         start_time = time.time()
 
         # Check for 2 seconds
         while time.time() - start_time < 0.5:
             current_pos = self._get_position()
-            
+            print(f"Checking gripper position: {current_pos}")
             # If the position changes at all, it's not securely gripping
-            if current_pos != start_pos:
-                return False
-            if current_pos >= (180):  # If it's fully closed without gripping, also return False
+            # if current_pos != start_pos:
+            #     return False
+            if current_pos >= (180):  # If it's fully closed, also return False
                 return False
         return True
     
@@ -304,9 +307,6 @@ class arm:
             return True
         return False
     
-
-            
-            
     def set_motion_params(self, speed: float = None, acceleration: float = None):
         if speed is not None:
             self.velocity = speed
@@ -337,62 +337,122 @@ class arm:
         except Exception:
             return None
 
-    def find_intercept_x_pos(x, y, z, a, v, v_box, t_delay, max_time=5.0):
-        # If max speed too low, can't catch horizontal motion
-        if v <= 2:
-            return None
+    import math
 
-        # Adjust initial position to account for delay
-        x = x + v_box * t_delay
+    def find_intercept_x_offset(self, x_rel, y_rel, z_rel, a_robot, v_robot, v_belt, t_delay):
+        """
+        Calculates the exact X-axis drift of the box during the vision delay and the robot's travel time.
+        Returns the distance (offset) to add to the target X coordinate.
+        
+        Inputs:
+        - x_rel, y_rel, z_rel: The relative distance the robot must travel to reach the box (in mm)
+        - a_robot: Robot acceleration in mm/s^2
+        - v_robot: Robot max velocity in mm/s
+        - v_belt: Conveyor belt speed in mm/s
+        - t_delay: Vision processing time in seconds
+        """
+        if v_belt <= 0:
+            return 0.0
 
-        # time it takes for the gripper to reach max speed 
-        t_switch = 2 * v / a 
-
-        # distance gripper can travel in time t
-        def my_dist(t):
-            if t < t_switch:
-                return a * t * t / 4.0
+        # The initial distance based on the stale camera image
+        current_travel_dist = math.sqrt(x_rel**2 + y_rel**2 + z_rel**2)
+        
+        # Accurate Kinematic Model: How long does it take the robot to move 'distance'?
+        def time_to_travel(distance):
+            if distance <= 0: return 0.0
+            accel_dist = (v_robot**2) / a_robot
+            if distance <= accel_dist:
+                # Triangular profile (doesn't reach max speed)
+                return 2.0 * math.sqrt(distance / a_robot)
             else:
-                return (v * v) / a + v * (t - t_switch)
+                # Trapezoidal profile (hits max speed, cruises, decelerates)
+                return (v_robot / a_robot) + (distance / v_robot)
 
-        # distance to moving box
-        def target_dist(t):
-            return math.sqrt((x + v_box * t)**2 + y*y + z*z)
+        # Iterative Solver: 
+        # Because the box moves while the robot moves, the target distance increases.
+        # We iterate a few times to converge on the exact time and distance.
+        t_travel = time_to_travel(current_travel_dist)
+        
+        for _ in range(5): # 5 iterations is more than enough for a slow conveyor to converge
+            t_total = t_delay + t_travel
+            
+            # How far the box drifts in X during the total elapsed time
+            drift_x = v_belt * t_total 
+            
+            # Recalculate the true distance the robot has to move, factoring in the drift
+            current_travel_dist = math.sqrt((x_rel + drift_x)**2 + y_rel**2 + z_rel**2)
+            
+            # Recalculate travel time based on the new, slightly longer distance
+            t_travel = time_to_travel(current_travel_dist)
 
-        # difference (want >= 0)
-        def f(t):
-            return my_dist(t) - target_dist(t)
+        # Return the final converged distance the box moved
+        # This is your offset.
+        return v_belt * (t_delay + t_travel)
 
-        # Start search from t_delay
-        left, right = t_delay, max_time
+    # def hover(self, x_mm: float, y_mm: float, ceta_deg: float, vision_delay: float, max_wait_s: float = 3.0, belt_vx_mm_s: float = 0.0) -> bool:
+    #     # 1. Apply Camera-to-Robot Offset
+    #     offset_x = 85.0
+    #     offset_y = 2.0    
+    #     box_start_x = x_mm + offset_x
+    #     box_start_y = y_mm + offset_y
 
-        # If even at max_time we can't catch → no solution
-        if f(right) < 0:
-            return None
 
-        for _ in range(60):
-            mid = (left + right) / 2.0
-            if f(mid) >= 0:
-                right = mid
-            else:
-                left = mid
 
-        t_intercept = right
+    #     target_hover_x = box_start_x#+self.find_intercept_x_pos(box_start_x, box_start_y, 0, self.acceleration*1000, self.velocity*1000, belt_vx_mm_s, vision_delay)
+    #     target_hover_y = box_start_y # + (belt_vy_mm_s * total_time)
 
-        return x + v_box * t_intercept
+    #     if ceta_deg < 0:
+    #         tilt_rz_deg = -90 + np.abs(ceta_deg)
+    #     else:
+    #         tilt_rz_deg = 90 - np.abs(ceta_deg)
+    #     print(f"Calculated tilt angle: {tilt_rz_deg:.1f}° based on ceta={ceta_deg:.1f}°")
+    #     print(f" Pose from camera + offset: ({target_hover_x:.1f}, {target_hover_y:.1f}) {tilt_rz_deg:.1f}° to hover above the box start position")      
+    #     current_pose = self._read_actual_tcp_pose()
+    #     if current_pose is not None:
+    #         print(f"current arm pose: {current_pose} will move to target hover pose: ({current_pose[0]+target_hover_x:.1f}, {current_pose[1]+target_hover_y:.1f}, {current_pose[2]:.1f}) with tilt {current_pose[5]+tilt_rz_deg:.1f}°")
+    #     else:
+    #         print("current arm pose unavailable, sending relative hover move anyway")
 
-    def hover(self, x_mm: float, y_mm: float, ceta_deg: float, vision_delay: float, max_wait_s: float = 3.0, belt_vx_mm_s: float = 0.0) -> bool:
+    #     # 5. Go hover above the box
+    #     hover_start = time.monotonic()
+    #     reached = self.move_rel(target_hover_x, target_hover_y, -215,
+    #                             0, 0, tilt_rz_deg, wait=True, timeout=max_wait_s)
+    #     hover_elapsed = time.monotonic() - hover_start
+    #     if reached:
+    #         print(f"[HOVER] Reached hover target in {hover_elapsed:.2f}s")
+    #     else:
+    #         print(f"[HOVER] Timed out after {hover_elapsed:.2f}s; continuing")
+    
+    #     return reached
+    def hover(self, x_mm: float, y_mm: float, ceta_deg: float, vision_delay: float, max_wait_s: float = 3.0, belt_vx_mm_s: float = 20.0) -> bool:
         # 1. Apply Camera-to-Robot Offset
-        offset_x = 85.0
-        offset_y = 2.0    
+        offset_x = 60.0
+        offset_y = 20.0    
         box_start_x = x_mm + offset_x
         box_start_y = y_mm + offset_y
 
+        # Define the relative Z drop (you used -215 in your move_rel)
+        relative_z = -215.0
 
+        # Calculate the X offset caused by the moving belt
+        x_intercept_offset = self.find_intercept_x_offset(
+            x_rel=box_start_x, 
+            y_rel=box_start_y, 
+            z_rel=relative_z, 
+            a_robot=self.acceleration * 1000, 
+            v_robot=self.velocity * 1000, 
+            v_belt=belt_vx_mm_s, 
+            t_delay=vision_delay
+        )
 
-        target_hover_x = box_start_x#+self.find_intercept_x_pos(box_start_x, box_start_y, 0, self.acceleration*1000, self.velocity*1000, belt_vx_mm_s, vision_delay)
-        target_hover_y = box_start_y # + (belt_vy_mm_s * total_time)
+        target_hover_x = box_start_x + x_intercept_offset
+        target_hover_y = box_start_y 
+        
 
+        # if ceta_deg < 0:
+        #     tilt_rz_deg = -90 + np.abs(ceta_deg)
+        # else:
+        #     tilt_rz_deg = 90 - np.abs(ceta_deg)
         if ceta_deg < 0:
             tilt_rz_deg = -90 + np.abs(ceta_deg)
         else:
@@ -416,6 +476,8 @@ class arm:
             print(f"[HOVER] Timed out after {hover_elapsed:.2f}s; continuing")
     
         return reached
+
+        # ... proceed with the rest of your move_rel execution exactly as it was ...
     
 def main():
     my_arm = arm()  # Example belt speed
@@ -443,52 +505,5 @@ def main():
     
 if __name__ == '__main__':
     my_arm = arm()
-
-    # # test movement to start position
-    # print('moving to start position...')
     my_arm.move_abs(my_arm.start_pose[0], my_arm.start_pose[1], my_arm.start_pose[2], my_arm.start_rot[0], my_arm.start_rot[1], my_arm.start_rot[2])
     my_arm.go_to_start()
-
-    # # Move to safe start position
-    # print("Moving to cam start position...")
-    # my_arm.go_to_start()
-
-    # success = my_arm.hover_and_catch(0,0)
-
-    # #my_arm.gripper_open()
-    # time.sleep(0.5)
-
-    #         # Return to start
-    # my_arm.go_to_start()
-
-    # test grip
-    # print("Testing gripper open/close...")
-    # print("Opening gripper...")
-    # my_arm.gripper_open(wait=True)
-    # time.sleep(2)
-    # print("Closing gripper...")
-    # my_arm.gripper_close(wait=True)
-    # while not my_arm.gripped():
-    #     my_arm.gripper_open(wait=True)
-    #     time.sleep(0.5)
-    #     my_arm.gripper_close(wait=True)
-    #     time.sleep(0.5)
-    # if my_arm.gripped():
-    #     print("Gripper is holding an object.")
-    #     my_arm.move_abs(my_arm.start_pose[0], my_arm.start_pose[1], my_arm.start_pose[2], my_arm.start_rot[0], my_arm.start_rot[1], my_arm.start_rot[2])
-    # print(my_arm.gripped())
- 
-    # my_arm = None
-    # try:
-    #     print("Initializing robot arm...")
-    #     my_arm = arm()  # Example belt speed
-    #     print("Connection test passed:", my_arm.test_connection())
-    #     print("Moving to start position...")
-    #     my_arm.go_to_start()
-    #     print("Starting main loop. Press Ctrl+C to exit.")
-
-    # except KeyboardInterrupt:
-    #     print("Keyboard interrupt received, shutting down.")
-    # finally:
-    #     if my_arm:
-    #         my_arm.disconnect()
