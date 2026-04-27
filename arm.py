@@ -24,8 +24,8 @@ class arm:
         self.cam_read_pose = [180, -292, 380]  # mm, position to read camera coordinates from the vision system
         self.cam_read_rot = [127, 127, 0]  # degree
         # Default movement parameters
-        self.velocity = 2.5 # m/s
-        self.acceleration = 2.5  # m/s^2
+        self.velocity = 5.0 # m/s
+        self.acceleration = 5.0  # m/s^2
 
         # self.velocity = 0.5 # m/s
         # self.acceleration = 0.5  # m/s^2
@@ -373,7 +373,7 @@ class arm:
         # We iterate a few times to converge on the exact time and distance.
         t_travel = time_to_travel(current_travel_dist)
         
-        for _ in range(5): # 5 iterations is more than enough for a slow conveyor to converge
+        for _ in range(3): # 5 iterations is more than enough for a slow conveyor to converge
             t_total = t_delay + t_travel
             
             # How far the box drifts in X during the total elapsed time
@@ -445,7 +445,7 @@ class arm:
             t_delay=vision_delay
         )
 
-        target_hover_x = box_start_x + x_intercept_offset
+        target_hover_x = box_start_x - x_intercept_offset + 20
         target_hover_y = box_start_y 
         
 
@@ -476,32 +476,6 @@ class arm:
             print(f"[HOVER] Timed out after {hover_elapsed:.2f}s; continuing")
     
         return reached
-
-        # ... proceed with the rest of your move_rel execution exactly as it was ...
-    
-def main():
-    my_arm = arm()  # Example belt speed
-    try:
-        while True:
-            coor = my_arm.get_coordinates()
-            if coor is not None:
-                # get x and y from coordinates
-                x, y = coor
-                # move robot to the box
-                my_arm.move(x, y, 0, 0, 0, 0)
-                my_arm.move(0, -0.09, 0, 0, 0, 0)  # move down to hover above the box
-                # hover above the box with same speed and acceleration of the box + close the gripper at the same time (multithreading)
-                while my_arm.gripped() is False:
-                    my_arm.gripper_close() + my_arm.move(0, y+0.01, 0, 0, 0, 0)  # keep hovering with the same speed and acceleration of the box
-
-                    time.sleep(0.5)
-                
-                # check if the box is gripped, if not, pass and wait for the next coordinates from the vision system
-                # if gripped, move the robot to the drop-off location and open the gripper to release the box then exit the loo
-    except KeyboardInterrupt:
-        print("Keyboard interrupt received, stopping loop.")
-    finally:
-        my_arm.disconnect()
     
 if __name__ == '__main__':
     my_arm = arm()
